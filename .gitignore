@@ -1,3 +1,6 @@
+# Release tooling — not for distribution
+release.sh
+
 # Binary artifacts — published via GitHub Releases, not tracked in git
 *.dll
 *.so

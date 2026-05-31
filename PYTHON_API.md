@@ -202,7 +202,7 @@ Semantic search by embedding vector.
 | `top_k` | `int` | `10` | Maximum results |
 | `tau` | `float` | `0.5` | Similarity threshold |
 
-**Returns:** List of `Hit` objects with `.frame_id`, `.score`, `.confidence`, `.path_length`.
+**Returns:** List of `Hit` objects with `.frame_id`, `.score`, `.confidence`, `.path_length`, `.snippet`, `.content`, and `.frame` (the full resolved `Frame`, so no secondary lookup is needed).
 
 ### `store.search_with_opts(query_embedding, opts) -> list[Hit]`
 
@@ -213,34 +213,56 @@ Search with full options control.
 | `query_embedding` | `list[float]` | Query vector |
 | `opts` | `SearchOpts` | Search options |
 
-### `store.search_text(text, top_k=10, tau=0.5) -> list[Hit]`
+### `store.search_by_vector(query_embedding, opts=None) -> list[Hit]`
 
-Search by text (uses the store's built-in encoder).
+Search by a pre-computed query vector, optionally with a `SearchOpts`. With no
+`opts`, behaves like `search(query_embedding)` (defaults `top_k=10`, `tau=0.5`).
 
-| Param | Type | Description |
-|-------|------|-------------|
-| `text` | `str` | Query text |
-| `top_k` | `int` | Maximum results |
-| `tau` | `float` | Similarity threshold |
+### `store.search_text(query, opts=None) -> list[Hit]`
 
-### `store.search_with_warp(query_embedding, targets, suppress, profile, bound_k, top_k, tau) -> list[Hit]`
-
-Search with warp field steering.
-
-### `store.search_with_trace(query_embedding, top_k, tau, include_superseded) -> list[TraceEntry]`
-
-Search with full traversal trace for debugging.
-
-### `SearchOpts(top_k, tau_similarity, max_depth, include_superseded, tier, tier_auto_threshold)`
+Search by text. Encodes `query` via the store's built-in encoder (lazy-loaded
+from `model_id`) and runs the standard search. Pass a `SearchOpts` to control
+`top_k`/`tau`/tier; with no `opts`, uses `top_k=10`, `tau=0.5`.
 
 | Param | Type | Default | Description |
 |-------|------|---------|-------------|
-| `top_k` | `int` | -- | Maximum results |
-| `tau_similarity` | `float` | -- | Similarity threshold |
-| `max_depth` | `int` | -- | Maximum traversal depth |
-| `include_superseded` | `bool` | -- | Include superseded frames |
-| `tier` | `Tier` | -- | Pre-filter tier |
-| `tier_auto_threshold` | `int` | -- | Frame count to activate tiered pre-filter |
+| `query` | `str` | -- | Query text |
+| `opts` | `SearchOpts` | `None` | Search options (or `None` for defaults) |
+
+### `store.search_with_warp(query_embedding, targets, suppress, profile="bounded", bound_k=1.5, top_k=10, tau=0.5) -> list[Hit]`
+
+Search with warp field steering. `targets` and `suppress` are lists of
+`(embedding, magnitude)` tuples. `profile` is `"routing"`, `"saturation"`, or
+`"bounded"`.
+
+### `store.search_with_warp_spec(query_embedding, spec, top_k=10, tau=0.5, magnitude_overrides=None) -> list[Hit]`
+
+Search using a `WarpSpec` object instead of primitive args. Resolves frame-id
+inputs and named magnitudes against the store's corpus and the bundled
+`NAMED_MAGNITUDES` table. `magnitude_overrides` is an optional
+`dict[str, float]` overriding named magnitudes.
+
+### `store.search_with_trace(query_embedding, top_k=10, tau=0.5) -> tuple[list[Hit], list[TraceEntry]]`
+
+Search returning both hits **and** the BFS visit trace. Returns a
+`(hits, trace)` tuple — `hits` are score-ranked (matches `search`), `trace`
+is in visit order. Each `TraceEntry` has `.frame_id`, `.depth`, `.score`,
+`.visit_order`, `.source` (`"phase1_eigen"` | `"child"` | `"sim_edge"`),
+`.parent_id`.
+
+### `SearchOpts(top_k=10, tau_similarity=0.5, max_depth=50, include_superseded=False, tier=Tier.AUTO, tier_auto_threshold=10000)`
+
+| Param | Type | Default | Description |
+|-------|------|---------|-------------|
+| `top_k` | `int` | `10` | Maximum results |
+| `tau_similarity` | `float` | `0.5` | Similarity threshold |
+| `max_depth` | `int` | `50` | Accepted for parity; not honored (depth comes from `StoreConfig.search_max_depth`) |
+| `include_superseded` | `bool` | `False` | Accepted for parity; not honored (`search` never returns superseded frames) |
+| `tier` | `Tier` | `Tier.AUTO` | Pre-filter tier (`COARSE`/`MEDIUM`/`AUTO` apply quantized pre-filtering; `FINE`/`NONE` skip it) |
+| `tier_auto_threshold` | `int` | `10000` | Frame count above which `AUTO` activates tiered pre-filter |
+
+> `SearchOpts` only takes effect through `search_with_opts`, `search_by_vector`,
+> and `search_text`. Plain `search(...)` does not apply tier pre-filtering.
 
 ---
 
@@ -248,9 +270,9 @@ Search with full traversal trace for debugging.
 
 ### `store.get_frame(frame_id) -> Frame | None`
 
-Get a frame by ID. Returns `None` if not found.
+Get a frame by ID. Returns `None` if not found. `store.get(frame_id)` is an alias.
 
-**Frame fields:** `.id`, `.content`, `.embedding`, `.parent_id`, `.watermark`, `.status`, `.in_degree`, `.timestamp`, `.metadata`, `.customer_uuid`, `.writer_signature`
+**Frame fields:** `.id`, `.parent_id`, `.status`, `.content`, `.embedding`, `.metadata` (dict, deserialized), `.metadata_json` (raw str), `.watermark`, `.content_hash`, `.in_degree`, `.model_id`, `.timestamp`, `.status_ref`, `.status_sources`, `.customer_uuid` (16 bytes under SECURE mode, else empty), `.writer_signature` (64-byte Ed25519 under SECURE mode, else empty), `.marking_bytes` (Gov mode only), `.snippet` (UTF-8 preview of content).
 
 ### `store.frame_ids() -> list[str]`
 
@@ -282,7 +304,7 @@ Embedding dimensionality.
 
 ### `store.stats() -> StoreStats`
 
-Store statistics: `.total_frames`, `.active_frames`, `.eigenframe_count`, `.seed_count`, `.superseded_count`, `.redirect_count`, `.model_id`, `.dim`.
+Store statistics: `.total_frames`, `.active_frames`, `.eigenframes`, `.seeds`, `.superseded`, `.redirects`, `.model_id`.
 
 ---
 
@@ -320,59 +342,77 @@ Chain from the nearest frame to the query point.
 
 Chain between two points in embedding space.
 
-### `store.chain_to_with_warp(query_embedding, warp_spec, ...) -> Chain`
+### `store.chain_to_with_warp(query_embedding, targets, suppress, profile="bounded", bound_k=1.5) -> Chain`
 
-Chain with warp field applied.
+Chain from the nearest warped frame. `targets`/`suppress` are `(embedding, magnitude)` tuples; `profile` is `"routing"`, `"saturation"`, or `"bounded"`.
 
-### `store.chain_between_with_warp(emb_a, emb_b, warp_spec, ...) -> Chain`
+### `store.chain_between_with_warp(emb_a, emb_b, targets, suppress, profile="bounded", bound_k=1.5) -> Chain`
 
-Chain between two points with warp field.
+Chain between two points with a warp field applied.
 
 ### `store.lineage(frame_id) -> list[Frame]`
 
 Ancestry chain from a frame back to genesis.
 
-**Chain fields:** `.frames`, `.primitive`, `.coherence` (a `ChainCoherence` with `.mean`, `.min`, `.max`, `.std`, `.segments`).
+### `store.gradient(chain) -> list[GradientPoint]`
+
+Semantic gradient along an ordered list of frame IDs — one `GradientPoint` (`.frame_id`, `.similarity`, `.delta`) per step.
+
+### `store.constitutive_score(chain) -> float`
+
+`1 - jaccard(chain_intermediates, midpoint_NN)` for an ordered frame-ID list. Values below `0.20` indicate the chain carries constitutive information beyond a midpoint search.
+
+### `store.subtree(frame_id, max_depth=None) -> list[Frame]`
+
+All descendant frames under `frame_id`, optionally bounded by `max_depth`.
+
+### `store.subtrees(min_size=10) -> list[SubtreeInfo]`
+
+Summaries of subtrees with at least `min_size` descendants. Each `SubtreeInfo` has `.root`, `.root_status`, `.descendant_count`, `.eigenframe_count`, `.max_depth`.
+
+**Chain fields:** `.frames` (`list[Frame]`), `.frame_ids` (`list[str]`), `.primitive` (`"parent_tree"` | `"similarity_walk"` | `"mixed"`), `.segments` (`list[Segment]`), `.coherence` (a `ChainCoherence` with `.mean_gradient`, `.min_gradient`, `.fragmentation_events`, `.pass_strict`, `.pass_loose`).
 
 ---
 
 ## Neighborhood
 
-### `store.neighborhood(frame_id, tau=0.5, hops=2) -> NeighborhoodResult`
+### `store.neighborhood(frame_id, tau=None, hops=2) -> NeighborhoodResult`
 
-Explore the local neighborhood of a frame.
+Explore the local neighborhood of a frame. `tau=None` auto-resolves the threshold.
 
-### `store.neighborhood_with_warp(frame_id, tau, hops, warp_spec) -> NeighborhoodResult`
+### `store.neighborhood_with_warp(frame_id, targets, suppress, profile="bounded", bound_k=1.5, tau=0.5, hops=2) -> NeighborhoodResult`
 
-Neighborhood exploration with warp field.
+Neighborhood exploration with a warp field applied.
 
-**NeighborhoodResult fields:** `.frames`, `.edges`, `.region_eigenframe_id`.
+**NeighborhoodResult fields:** `.consensus`, `.geometric`, `.lineage` (each a `list[str]` of frame IDs), `.tau_used`, `.hops_used`. Helper methods: `.union()`, `.ranked(weight_consensus=2.0, weight_geometric=1.0, weight_lineage=1.0)`, `.divergence()`.
 
 ---
 
 ## Warp (Steering)
 
-### `store.apply_warp(query_embedding, targets, suppress, profile, bound_k) -> list[float]`
+### `store.apply_warp(query, targets, suppress, profile="bounded", bound_k=1.5) -> list[float]`
 
-Apply a warp field to a query embedding without searching.
+Apply a warp field to a query embedding without searching. `targets`/`suppress` are `(embedding, magnitude)` tuples.
 
-### `store.warp_query(query_embedding, warp_spec) -> list[float]`
+### `store.warp_query(query, spec, magnitude_overrides=None) -> list[float]`
 
-Apply a `WarpSpec` to a query embedding.
+Apply a `WarpSpec` to a query embedding. `magnitude_overrides` is an optional `dict[str, float]` overriding named magnitudes.
 
-### `store.calibrate_warp(n_queries, n_targets, magnitudes, top_k, seed) -> WarpCalibration`
+### `store.calibrate_warp(n_queries=30, n_targets=3, magnitudes=None, top_k=10, seed=42) -> WarpCalibration`
 
-Calibrate warp magnitude parameters.
+Run an empirical magnitude calibration sweep against the store. `store.calibrate_magnitudes(...)` is an alias.
 
-### `WarpSpec(targets, suppress, profile, bound_k, accumulation)`
+### `WarpSpec(targets=None, suppress=None, profile="bounded", bound_k=1.5, accumulation="reset")`
 
-| Param | Type | Description |
-|-------|------|-------------|
-| `targets` | `list[tuple]` | Target (input, magnitude) pairs |
-| `suppress` | `list[tuple]` | Suppress (input, magnitude) pairs |
-| `profile` | `str` | Warp profile: `"gaussian"`, `"linear"`, `"step"` |
-| `bound_k` | `float` | Bound parameter |
-| `accumulation` | `str` | `"reset"` or `"cumulative"` |
+| Param | Type | Default | Description |
+|-------|------|---------|-------------|
+| `targets` | `list[tuple]` | `None` | `(input, magnitude)` pairs |
+| `suppress` | `list[tuple]` | `None` | `(input, magnitude)` pairs |
+| `profile` | `str` | `"bounded"` | Warp profile: `"routing"`, `"saturation"`, or `"bounded"` |
+| `bound_k` | `float` | `1.5` | Bound parameter |
+| `accumulation` | `str` | `"reset"` | `"reset"` or `"cumulative"` |
+
+Each `input` is either a frame-id `str` or a `list[float]` embedding. Each `magnitude` is either a `float` or a named-magnitude `str` (`"action_floor"`, `"routing"`, `"sub_saturation"`, `"saturation"`). Read-only attributes: `.profile`, `.bound_k`, `.accumulation`.
 
 ---
 
@@ -394,7 +434,7 @@ Steerability score from query toward target.
 
 Health metrics for an eigenframe's region.
 
-### `store.similarity_stats() -> SimilarityStats`
+### `store.similarity_stats() -> SimilarityDistribution`
 
 Global similarity distribution statistics.
 
@@ -406,17 +446,17 @@ Resolve a tau value (auto-select if `None`).
 
 ## Intelligence
 
-### `store.drift_report(window, threshold) -> list[DriftAlert]`
+### `store.drift_report(window=20, threshold=0.3) -> list[DriftAlert]`
 
-Detect semantic drift over a sliding window.
+Detect eigenframes whose children are drifting away from them.
 
-### `store.contradictions(min_divergence) -> list[ContradictionCandidate]`
+### `store.contradictions(min_divergence=1.2) -> list[ContradictionCandidate]`
 
-Find contradictory frame pairs.
+Find contradictory frame pairs (siblings under a shared parent that diverge).
 
 ### `store.contradictions_v2(tau=None) -> ContradictionReport`
 
-Enhanced contradiction detection with full report.
+Three-population contradiction detection. `tau` accepts `None` (p95), the strings `"loose"` (p75) / `"strict"` (p99), or an explicit float. Returns a `ContradictionReport` with `.geometric`, `.lineage`, `.consensus` (each a `list[ContradictionPair]`).
 
 ### `store.evolution(seed_frame_id) -> list[Frame]`
 
@@ -430,7 +470,7 @@ Detailed evolution steps with metrics.
 
 ## Consolidation
 
-### `store.merge_candidates(tau) -> list[MergeCluster]`
+### `store.merge_candidates(tau=0.92) -> list[MergeCluster]`
 
 Find clusters of similar frames that could be consolidated.
 
@@ -442,9 +482,9 @@ Consolidate a specific set of frames.
 
 Auto-detect and consolidate all merge candidates.
 
-### `store.consolidate_with_strategy(frame_ids, strategy, ...) -> ConsolidateReport`
+### `store.consolidate_with_strategy(frame_ids, strategy) -> ConsolidateReport`
 
-Consolidate with explicit merge strategy.
+Consolidate with an explicit `MergeStrategy`. `MergeStrategy.Geometric` is supported; `MergeStrategy.Semantic` raises `RuntimeError` because the Rust runtime does not bundle LLM synthesis.
 
 ---
 
@@ -471,19 +511,34 @@ Assert a typed edge between two frames.
 
 Retract a typed edge.
 
-### `store.structural_neighbors(frame_id, relations, direction) -> list[StructuralHit]`
+### `store.structural_neighbors(frame_id, relations, direction="outgoing") -> list[StructuralHit]`
 
 Find neighbors via typed edges.
 
 | Param | Type | Description |
 |-------|------|-------------|
 | `frame_id` | `str` | Source frame |
-| `relations` | `str` (JSON) | Relation filter |
+| `relations` | `list[str]` | Relation names to traverse |
 | `direction` | `str` | `"outgoing"`, `"incoming"`, or `"both"` |
 
-### `store.structural_expand(frame_id, relations, direction, hops) -> list[StructuralHit]`
+### `store.structural_expand(hits, relations, direction="outgoing", score_combine="keep_input") -> list[tuple[str, float]]`
 
-Multi-hop expansion along typed edges.
+Pipeline composition: expand an existing `(frame_id, score)` hit list by one hop along structural relations.
+
+| Param | Type | Description |
+|-------|------|-------------|
+| `hits` | `list[tuple[str, float]]` | Input `(frame_id, score)` hits |
+| `relations` | `list[str]` | Relation names to traverse |
+| `direction` | `str` | `"outgoing"`, `"incoming"`, or `"both"` |
+| `score_combine` | `str` | How to combine scores: `"multiply"`, `"min"`, `"max"`, or `"keep_input"` |
+
+### `store.filter_by_relation(hits, relations, direction="outgoing", require_present=True) -> list[tuple[str, float]]`
+
+Filter a `(frame_id, score)` hit list to those participating in any of the given relations.
+
+### `SeraphStore.intersect_hits(a, b) -> list[tuple[str, float]]` / `SeraphStore.union_hits(a, b)`
+
+Static helpers to combine two `(frame_id, score)` hit lists. `intersect_hits` keeps the min score per shared frame; `union_hits` keeps the max.
 
 ---
 
@@ -519,9 +574,9 @@ Seal the store. No further writes are accepted. Returns the seal frame ID.
 
 Audit writer attribution across all frames.
 
-### `store.verify_attestation() -> AttestationAudit`
+### `store.verify_attestation(public_key_resolver=None, anchor_verifier=None, verify_operator_identity=True) -> AttestationAudit`
 
-Full attestation audit: chain validity, genesis seed, operator identity, cross-customer writes.
+Full attestation audit: chain validity, genesis seed, operator identity, anchors, cross-customer writes. Optional callbacks: `anchor_verifier(backend, token, payload) -> bool` drives the `.anchor` field when supplied; `verify_operator_identity=False` skips operator-identity signature checks. `public_key_resolver` is accepted for parity but not consulted by the default check.
 
 ### `store.genesis_seed() -> bytes | None`
 
@@ -531,23 +586,27 @@ Raw genesis seed bytes.
 
 Genesis attestation as JSON string.
 
+### `seraph.verify_chain(frames, genesis_seed=None) -> tuple[bool, str | None]`
+
+Module-level helper. Verify watermark-chain integrity across an ordered list of `Frame` objects (parent → child order). Returns `(is_valid, first_failing_frame_id)`. Supply `genesis_seed` (bytes) for v2-attested stores; omit it to use the default `GENESIS_SEED_V1`.
+
 ---
 
 ## Anchoring
 
-### `store.append_tip_anchor(backend, proof, tip_frame_id, status, metadata=None) -> str`
+### `store.append_tip_anchor(backend_name, anchor_token, tip_frame_id, status, supersedes=None) -> str`
 
 > **Requires Commercial or Enterprise license.** Free-tier calls will raise `RuntimeError`.
 
-Append a timestamping anchor record.
+Append a timestamping anchor record. Returns the anchor frame ID.
 
 | Param | Type | Description |
 |-------|------|-------------|
-| `backend` | `str` | Anchor backend name (e.g., `"opentimestamps"`, `"rfc3161"`) |
-| `proof` | `bytes` | Proof/token bytes |
+| `backend_name` | `str` | Anchor backend name (e.g., `"opentimestamps"`, `"rfc3161"`) |
+| `anchor_token` | `bytes` | Proof/token bytes |
 | `tip_frame_id` | `str` | Frame ID this anchor covers |
 | `status` | `str` | `"pending"` or `"confirmed"` |
-| `metadata` | `str` | Optional JSON metadata |
+| `supersedes` | `str` | Optional — frame ID of a previous anchor this one supersedes |
 
 ### `store.list_tip_anchors(resolved) -> list[str]`
 
@@ -566,8 +625,19 @@ Subscribe to store events. Returns a subscriber ID.
 | `"promote"` | `PromoteEvent` |
 | `"contradiction"` | `ContradictionEvent` |
 | `"drift"` | `DriftEvent` |
-| `"consolidate"` | `ConsolidateEvent` |
+| `"consolidation"` | `ConsolidateEvent` |
 | `"milestone"` | `MilestoneEvent` |
+| `"*"` | any of the above (subscribe to all events) |
+
+The callback receives one payload object. Payload fields:
+
+- `PromoteEvent`: `.frame_id`, `.in_degree`, `.trigger` (`"threshold"` | `"manual"`)
+- `ContradictionEvent`: `.new_frame`, `.contradicted_pairs`, `.population`
+- `DriftEvent`: `.eigenframe_id`, `.coherence`, `.direction`
+- `ConsolidateEvent`: `.merged_count`, `.new_frame_id`, `.redirect_frame_ids`, `.superseded_ids`
+- `MilestoneEvent`: `.kind`, `.detail`
+
+Callback exceptions are caught and printed to stderr; they do not interrupt the engine.
 
 ### `store.subscribe(event_name, callback) -> int`
 
@@ -627,27 +697,33 @@ Commit a batch write session and update indices.
 
 | Type | Key Fields |
 |------|------------|
-| `Frame` | `.id`, `.content`, `.embedding`, `.parent_id`, `.watermark`, `.status`, `.in_degree`, `.timestamp`, `.metadata`, `.customer_uuid`, `.writer_signature` |
-| `Hit` | `.frame_id`, `.score`, `.confidence`, `.path_length` |
-| `Chain` | `.frames`, `.primitive`, `.coherence` |
-| `ChainCoherence` | `.mean`, `.min`, `.max`, `.std`, `.segments` |
-| `StoreStats` | `.total_frames`, `.active_frames`, `.eigenframe_count`, `.seed_count`, `.superseded_count`, `.redirect_count`, `.model_id`, `.dim` |
-| `NeighborhoodResult` | `.frames`, `.edges`, `.region_eigenframe_id` |
-| `RegionHealth` | `.eigenframe_id`, `.member_count`, `.mean_similarity`, `.min_similarity`, `.max_similarity`, `.std_similarity`, `.coherence` |
-| `SimilarityStats` | `.mean`, `.std`, `.min`, `.max`, `.p25`, `.p50`, `.p75`, `.p95` |
+| `Frame` | `.id`, `.parent_id`, `.status`, `.content`, `.embedding`, `.metadata`, `.metadata_json`, `.watermark`, `.content_hash`, `.in_degree`, `.model_id`, `.timestamp`, `.status_ref`, `.status_sources`, `.customer_uuid`, `.writer_signature`, `.marking_bytes`, `.snippet` |
+| `Hit` | `.frame_id`, `.score`, `.confidence`, `.path_length`, `.snippet`, `.content`, `.frame` |
+| `TraceEntry` | `.frame_id`, `.depth`, `.score`, `.visit_order`, `.source`, `.parent_id` |
+| `Chain` | `.frames`, `.frame_ids`, `.primitive`, `.segments`, `.coherence` |
+| `Segment` | `.frames`, `.frame_ids`, `.primitive`, `.transition_reason` |
+| `ChainCoherence` | `.mean_gradient`, `.min_gradient`, `.fragmentation_events`, `.pass_strict`, `.pass_loose` |
+| `StoreStats` | `.total_frames`, `.active_frames`, `.eigenframes`, `.seeds`, `.superseded`, `.redirects`, `.model_id` |
+| `NeighborhoodResult` | `.consensus`, `.geometric`, `.lineage`, `.tau_used`, `.hops_used` (methods: `.union()`, `.ranked()`, `.divergence()`) |
+| `RegionHealth` | `.coherence`, `.direction`, `.candidate_split` |
+| `SimilarityDistribution` | `.count`, `.mean`, `.p75`, `.p90`, `.p95`, `.p99` |
 | `SnapshotView` | `.frame_ids`, `.timestamp` |
-| `DriftAlert` | `.frame_id`, `.drift_score`, `.window_start`, `.window_end` |
-| `ContradictionCandidate` | `.frame_a`, `.frame_b`, `.similarity`, `.divergence` |
-| `EvolutionStep` | `.frame_id`, `.distance`, `.generation` |
-| `MergeCluster` | `.frame_ids`, `.centroid_id`, `.similarity` |
-| `ConsolidateReport` | `.consolidated_id`, `.source_ids`, `.redirect_ids` |
-| `BulkConsolidateReport` | `.reports`, `.total_consolidated`, `.total_redirects` |
-| `RelationDef` | `.name`, `.slot`, `.flags` |
-| `StructuralHit` | `.frame_id`, `.relation`, `.weight`, `.direction`, `.hops` |
-| `TypedEdge` | `.from_id`, `.to_id`, `.relation`, `.weight`, `.slot` |
-| `WriterAudit` | `.writers`, `.cross_customer_writes` |
-| `AttestationAudit` | `.secure_mode`, `.chain_valid`, `.genesis_seed_matches`, `.operator_identity`, `.cross_customer_writes`, `.invalid_signature_count`, `.sealed`, `.all_ok`, `.writers`, `.failures` |
-| `WarpCalibration` | `.points`, `.summary` |
+| `SubtreeInfo` | `.root`, `.root_status`, `.descendant_count`, `.eigenframe_count`, `.max_depth` |
+| `DriftAlert` | `.frame_id`, `.frame_snippet`, `.mean_child_similarity`, `.drift_score`, `.child_count` |
+| `ContradictionCandidate` | `.frame_a_id`, `.frame_b_id`, `.shared_parent_id`, `.divergence` |
+| `ContradictionPair` | `.frame_a_id`, `.frame_b_id`, `.cosine`, `.shared_parent`, `.content_divergence` |
+| `ContradictionReport` | `.geometric`, `.lineage`, `.consensus` (each `list[ContradictionPair]`) |
+| `EvolutionStep` | `.frame_id`, `.timestamp`, `.depth`, `.similarity_to_seed`, `.snippet` |
+| `MergeCluster` | `.frame_ids`, `.snippet`, `.count` |
+| `ConsolidateReport` | `.merged_count`, `.new_frame_id`, `.redirect_frame_ids`, `.superseded_ids` |
+| `BulkConsolidateReport` | `.clusters_merged`, `.total_frames_merged`, `.total_redirects`, `.total_new_frames` |
+| `RelationDef` | `.slot`, `.name`, `.flags`, `.builtin`, `.active`, `.deprecated` |
+| `StructuralHit` | `.frame_id`, `.relation_slot`, `.weight`, `.direction` |
+| `GradientPoint` | `.frame_id`, `.similarity`, `.delta` |
+| `WriterAudit` | `.writers`, `.genesis_customer_uuid`, `.cross_customer_writes`, `.unsigned_frame_count`, `.sealed`, `.seal_frame_id` |
+| `AttestationAudit` | `.chain_valid`, `.genesis_seed_matches`, `.operator_identity`, `.operator_identity_signing_key_id`, `.anchor`, `.secure_mode`, `.sealed`, `.writers`, `.cross_customer_writes`, `.unsigned_frame_count`, `.invalid_signature_count`, `.post_seal_frame_count`, `.all_ok`, `.failures` |
+| `WarpCalibration` | `.dim`, `.model_id`, `.n_queries`, `.n_targets`, `.sweep`, `.action_floor`, `.routing`, `.sub_saturation`, `.saturation`, `.recommended_bound_k` (methods: `.summary()`, `.as_named_magnitudes()`) |
+| `WarpCalibrationPoint` | `.magnitude`, `.mean_jaccard`, `.std_jaccard`, `.mean_hits`, `.zero_result_pct` |
 
 ---
 
@@ -656,9 +732,12 @@ Commit a batch write session and update indices.
 | Enum | Values |
 |------|--------|
 | `FrameStatus` | `Active`, `Eigenframe`, `Superseded`, `Redirect`, `Genesis`, `Seed`, `System` |
-| `Tier` | `None_`, `Coarse`, `Medium`, `Fine`, `Auto` |
+| `Tier` | `AUTO`, `COARSE`, `MEDIUM`, `FINE`, `NONE` |
 | `Direction` | `Outgoing`, `Incoming`, `Both` |
-| `ScoreCombine` | `Max`, `Sum`, `Mean` |
+| `ScoreCombine` | `Multiply`, `Min`, `Max`, `KeepInput` |
+| `MergeStrategy` | `Geometric`, `Semantic` (`Semantic` raises — no bundled LLM synthesis) |
+| `RelationFlags` | `Active` (0x01), `Deprecated` (0x02), `Bidirectional` (0x04), `AsymmetricInverse` (0x08) |
+| `StoreTier` | `GPU` (0), `CPU` (1) — exposed for parity; runtime behavior is CPU |
 
 ---
 

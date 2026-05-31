@@ -39,7 +39,7 @@
 19. [Encoder](#encoder)
 20. [Batch Operations](#batch-operations)
 21. [Memory Management](#memory-management)
-21. [Structs Reference](#structs-reference)
+22. [Structs Reference](#structs-reference)
 
 ---
 
@@ -266,7 +266,7 @@ int seraph_store_search_with_warp(
     const float* query_embedding,  size_t query_len,
     const char* targets_json,      // JSON array of [embedding, magnitude]
     const char* suppress_json,     // JSON array of [embedding, magnitude]
-    const char* profile,           // "gaussian", "linear", "step"
+    const char* profile,           // "routing", "saturation", "bounded"
     float bound_k,
     size_t top_k,
     float tau,
@@ -373,6 +373,16 @@ char* seraph_store_frame_ids(void* handle);
 ```c
 char* seraph_store_eigenframe_ids(void* handle);
 ```
+
+**Returns:** JSON array of eigenframe IDs.
+
+### `seraph_store_eigenframes`
+
+```c
+char* seraph_store_eigenframes(void* handle);
+```
+
+**Returns:** JSON array of full frame objects for all eigenframes.
 
 ### `seraph_store_model_id`
 
@@ -503,6 +513,8 @@ char* seraph_store_neighborhood(
 ---
 
 ## Warp (Steering)
+
+> **Profile values:** the `profile` string accepts `"routing"`, `"saturation"`, or `"bounded"`. Any other value is an error. `"bounded"` is the default used by the higher-level wrappers.
 
 ### `seraph_store_apply_warp`
 
@@ -809,7 +821,7 @@ typedef void (*SeraphEventCallback)(const char* event_json, void* user_data);
 ```c
 uint64_t seraph_store_subscribe(
     void* handle,
-    const char* event_name,       // "promote", "contradiction", "drift", "consolidate", "milestone"
+    const char* event_name,       // "promote", "contradiction", "drift", "consolidation", "milestone", "*"
     SeraphEventCallback callback,
     void* user_data
 );
@@ -935,11 +947,9 @@ typedef struct {
 typedef struct {
     size_t total_frames;
     size_t active_frames;
-    size_t eigenframe_count;
-    size_t seed_count;
-    size_t superseded_count;
-    size_t redirect_count;
-    size_t dim;
+    size_t eigenframes;
+    size_t superseded;
+    size_t redirects;
 } SeraphStats;
 ```
 
@@ -947,12 +957,9 @@ typedef struct {
 
 ```c
 typedef struct {
-    size_t member_count;
-    float mean_similarity;
-    float min_similarity;
-    float max_similarity;
-    float std_similarity;
-    float coherence;
+    float   coherence;
+    uint8_t direction;        // 0 = stable, 1 = consolidating, 2 = fragmenting
+    uint8_t candidate_split;  // 1 if the region is a split candidate, else 0
 } SeraphRegionHealth;
 ```
 
@@ -960,34 +967,41 @@ typedef struct {
 
 ```c
 typedef struct {
-    float mean;
-    float std;
-    float min;
-    float max;
-    float p25;
-    float p50;
-    float p75;
-    float p95;
+    size_t count;
+    float  mean;
+    float  p75;
+    float  p90;
+    float  p95;
+    float  p99;
 } SeraphSimilarityStats;
 ```
 
 ### `SeraphFrameView`
 
+Returned by `seraph_store_borrow_frame`. All pointers point into engine-owned
+memory and must **not** be freed individually — release the whole view with
+`seraph_store_release_frame`. The struct carries three trailing private
+pointers used for cleanup; treat the view as opaque beyond the documented
+fields and never construct one yourself. Field order below matches the
+`#[repr(C)]` layout exactly.
+
 ```c
 typedef struct {
-    const char* id;
-    const uint8_t* content;
-    size_t content_len;
+    const char*  id;
+    const char*  parent_id;     // NULL if no parent
     const float* embedding;
-    size_t embedding_dim;
-    const char* parent_id;
-    uint8_t status;
-    uint32_t in_degree;
-    int64_t timestamp;
-    const uint8_t* watermark;
-    size_t watermark_len;
+    size_t       embedding_dim;
+    const uint8_t* content;
+    size_t       content_len;
+    uint32_t     in_degree;
+    uint8_t      status;        // 0=Genesis 1=Seed 2=Active 3=Eigenframe 4=Superseded 5=Redirect 6=System
+    int64_t      timestamp;
+    // ... three private cleanup pointers follow (do not access) ...
 } SeraphFrameView;
 ```
+
+> **Note:** this `status` byte uses a different numbering than the Python
+> `FrameStatus` enum. The values above are authoritative for the C ABI.
 
 ---
 

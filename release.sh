@@ -73,7 +73,11 @@ done
 echo ""
 echo "Creating archives..."
 (cd staging && tar czf "../seraph-${VERSION}.tar.gz" "seraph-${VERSION}")
-(cd staging && zip -qr "../seraph-${VERSION}.zip" "seraph-${VERSION}")
+if command -v zip &>/dev/null; then
+    (cd staging && zip -qr "../seraph-${VERSION}.zip" "seraph-${VERSION}")
+else
+    powershell -NoProfile -Command "Compress-Archive -Path 'staging/seraph-${VERSION}' -DestinationPath 'seraph-${VERSION}.zip'"
+fi
 echo "  seraph-${VERSION}.tar.gz"
 echo "  seraph-${VERSION}.zip"
 

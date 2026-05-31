@@ -17,8 +17,12 @@ Each release includes CPU and GPU library builds and the CLI, organized by platf
 ```
 seraph-<version>/
 ├── ffi/
-│   ├── windows-x86_64/seraph.dll          (CPU)
-│   ├── windows-x86_64-gpu/seraph.dll      (GPU)
+│   ├── windows-x86_64/
+│   │   ├── seraph.dll                     (CPU runtime)
+│   │   └── seraph.dll.lib                 (MSVC import lib)
+│   ├── windows-x86_64-gpu/
+│   │   ├── seraph.dll                     (GPU runtime)
+│   │   └── seraph.dll.lib                 (MSVC import lib)
 │   ├── linux-x86_64/libseraph.so          (CPU)
 │   └── linux-x86_64-gpu/libseraph.so      (GPU)
 ├── python/
@@ -96,22 +100,69 @@ import seraph
 
 ### C / C++ (FFI)
 
-Link against the shared library. The C ABI surface uses opaque handles, thread-local error reporting, and caller-owned buffers:
+The C ABI surface uses opaque handles, thread-local error reporting, and caller-owned buffers. See [FFI_API.md](FFI_API.md) for the full API reference.
+
+#### Windows (MSVC)
+
+The release ships `seraph.dll` and `seraph.dll.lib` (the MSVC import library). To link:
+
+1. **Rename the import lib.** MSVC's linker expects `seraph.lib`, not `seraph.dll.lib`:
+
+   ```
+   copy seraph.dll.lib seraph.lib
+   ```
+
+2. **Set the library search path** and link:
+
+   ```
+   cl /I. your_app.c /link /LIBPATH:path\to\ffi seraph.lib
+   ```
+
+3. **Place `seraph.dll` where your executable can find it** — either next to the `.exe`, or on `PATH`. For GPU builds, the NVIDIA driver DLLs must also be loadable (they normally are if the driver is installed).
+
+> **CMake example:**
+> ```cmake
+> add_executable(myapp main.c)
+> target_link_directories(myapp PRIVATE ${SERAPH_LIB_DIR})
+> target_link_libraries(myapp seraph)
+> # Copy DLL to output directory
+> add_custom_command(TARGET myapp POST_BUILD
+>     COMMAND ${CMAKE_COMMAND} -E copy_if_different
+>         "${SERAPH_LIB_DIR}/seraph.dll" $<TARGET_FILE_DIR:myapp>)
+> ```
+
+#### Linux / macOS
+
+```bash
+# Compile and link
+gcc -o myapp myapp.c -L/path/to/ffi -lseraph -Wl,-rpath,/path/to/ffi
+
+# Or set LD_LIBRARY_PATH at runtime
+export LD_LIBRARY_PATH=/path/to/ffi:$LD_LIBRARY_PATH
+```
+
+On macOS, use `DYLD_LIBRARY_PATH` or install to a system library path.
+
+#### Example
 
 ```c
-// Link: -lseraph (Linux/macOS) or seraph.lib (Windows MSVC)
+#include <stdio.h>
 
-// Example: open a store
-void* handle = NULL;
-int rc = seraph_store_open("/path/to/store.sfg", &handle);
-if (rc != 0) {
-    const char* err = seraph_last_error();
-    // handle error
+// Opaque handles — full signatures in FFI_API.md
+extern void* seraph_store_open(const char* path);
+extern void  seraph_store_close(void* handle);
+extern const char* seraph_last_error(void);
+
+int main() {
+    void* store = seraph_store_open("my_store.sfg");
+    if (!store) {
+        fprintf(stderr, "Error: %s\n", seraph_last_error());
+        return 1;
+    }
+    // ... use store ...
+    seraph_store_close(store);
+    return 0;
 }
-
-// ... use handle ...
-
-seraph_store_close(handle);
 ```
 
 A generated `seraph.h` header will be included in future releases.

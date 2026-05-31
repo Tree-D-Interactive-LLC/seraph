@@ -1,5 +1,6 @@
 # Release tooling — not for distribution
 release.sh
+CLAUDE.md
 
 # Binary artifacts — published via GitHub Releases, not tracked in git
 *.dll

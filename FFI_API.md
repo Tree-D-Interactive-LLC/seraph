@@ -886,7 +886,6 @@ char* seraph_encoder_encode_batch(void* handle, const char* texts_json);
 
 **Returns:** JSON array of embedding arrays.
 
-
 ### `seraph_encoder_encode_batch_flat`
 
 Batch-encode texts into a contiguous `float*` buffer. One FFI call encodes all texts in a single batched forward pass, amortising GPU kernel launch and per-call marshalling overhead. **This is the recommended batch encode path** — it matches native Rust throughput (~600 enc/s on GPU).

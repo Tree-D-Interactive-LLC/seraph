@@ -253,8 +253,8 @@ For licensing inquiries: **licensing@tree-d-interactive.net**
 
 ## Documentation
 
-- [Product overview](https://seraph-db.com)
-- [API Reference](https://seraph-db.com/docs)
+- [Product overview](https://www.seraph-db.com)
+- [API Reference](https://www.seraph-db.com/docs)
 
 ---
 

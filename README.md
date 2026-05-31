@@ -12,22 +12,45 @@ SERAPH is a storage and retrieval engine that organizes content through emergent
 
 Download the latest release for your platform from [Releases](https://github.com/Tree-D-Interactive/seraph-releases/releases).
 
-Each release includes two library builds and the CLI, organized by platform:
+Each release includes CPU and GPU library builds and the CLI, organized by platform:
 
 ```
 seraph-<version>/
 ├── ffi/
-│   ├── windows-x86_64/seraph.dll
-│   └── linux-x86_64/libseraph.so
+│   ├── windows-x86_64/seraph.dll          (CPU)
+│   ├── windows-x86_64-gpu/seraph.dll      (GPU)
+│   ├── linux-x86_64/libseraph.so          (CPU)
+│   └── linux-x86_64-gpu/libseraph.so      (GPU)
 ├── python/
-│   ├── windows-x86_64/seraph.pyd
-│   └── linux-x86_64/seraph.so
+│   ├── windows-x86_64/seraph.pyd          (CPU)
+│   ├── windows-x86_64-gpu/seraph.pyd      (GPU)
+│   ├── linux-x86_64/seraph.so             (CPU)
+│   └── linux-x86_64-gpu/seraph.so         (GPU)
 └── cli/
     ├── windows-x86_64/seraph.exe
     └── linux-x86_64/seraph
 ```
 
-Pick the library that matches your language and platform. Both library builds come from the same Rust codebase — the Python build includes PyO3 bindings, the C/FFI build does not.
+Pick the library that matches your language and platform. **GPU builds are recommended** when a CUDA-capable GPU is available — they accelerate embedding and eigenframe scanning. CPU builds are provided for containers and environments without GPU access. Both variants expose the same API; the only difference is the compute backend.
+
+### Compatibility Matrix
+
+| Platform | CPU | GPU | Notes |
+|----------|:---:|:---:|-------|
+| Windows x86_64 | ✓ | ✓ | GPU requires NVIDIA driver ≥ 520 |
+| Linux x86_64 | ✓ | ✓ | GPU requires NVIDIA driver ≥ 520 |
+| macOS arm64 | ✓ | — | Apple Silicon; no CUDA support |
+| macOS x86_64 | ✓ | — | Intel Mac; no CUDA support |
+
+**GPU requirements:**
+- NVIDIA GPU with compute capability ≥ 7.0 (Volta or newer)
+- NVIDIA driver ≥ 520 (CUDA 11.8+ runtime compatibility)
+- No separate CUDA toolkit install needed — the GPU build loads `libcudart` at runtime via the driver
+
+**Versions locked in this release:**
+- Candle 0.10 (pure-Rust ML inference)
+- cudarc 0.19.7 (CUDA runtime loading — supports CUDA 11.8 through 12.x)
+- Python 3.13 (PyO3 bindings)
 
 ### 2. Activate Your License
 
@@ -126,10 +149,10 @@ SERAPH is proprietary software licensed by [Tree D Interactive LLC](https://tree
 | Tier | Eligibility | Fee | Scope |
 |------|------------|-----|-------|
 | **Free** | Annual revenue under $500K | $0 | Development, evaluation, prototyping, non-commercial research. No production deployment. |
-| **Commercial** | Annual revenue $500K+ | $5,000/year | Production deployment on your own infrastructure. |
-| **Enterprise** | Embedded redistribution, third-party deployment, bespoke arrangements | [Contact us](mailto:licensing@tree-d-interactive.net) | Per Order Form. |
+| **Commercial** | Annual revenue $500K+ | $10,000/year | Production deployment on your own infrastructure. No multi-tenant SaaS, white-label, or redistribution. |
+| **Enterprise** | Multi-tenant SaaS, embedded redistribution, third-party deployment | [Contact us](mailto:licensing@tree-d-interactive.net) | Per Order Form. |
 
-The boundary between Commercial and Enterprise is where the SERAPH binary runs at runtime. If it runs on **your** infrastructure serving your end users, Commercial applies. If the binary ships to or runs on third-party systems, Enterprise with embedded-redistribution scope is required.
+The boundary between Commercial and Enterprise is the **location and control of the SERAPH binary at runtime**. If it runs exclusively on infrastructure you fully control, serving your own users, Commercial applies. Multi-tenant SaaS, redistribution, or any scenario where the binary runs outside your direct control requires Enterprise.
 
 ### Feature availability by tier
 

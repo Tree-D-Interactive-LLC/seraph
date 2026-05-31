@@ -1,3 +1,11 @@
+# Binary artifacts — published via GitHub Releases, not tracked in git
+*.dll
+*.so
+*.dylib
+*.pyd
+*.exe
 *.whl
 *.tar.gz
+*.zip
 dist/
+staging/

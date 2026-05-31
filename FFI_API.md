@@ -886,6 +886,44 @@ char* seraph_encoder_encode_batch(void* handle, const char* texts_json);
 
 **Returns:** JSON array of embedding arrays.
 
+
+### `seraph_encoder_encode_batch_flat`
+
+Batch-encode texts into a contiguous `float*` buffer. One FFI call encodes all texts in a single batched forward pass, amortising GPU kernel launch and per-call marshalling overhead. **This is the recommended batch encode path** — it matches native Rust throughput (~600 enc/s on GPU).
+
+```c
+int seraph_encoder_encode_batch_flat(
+    void* handle,
+    const char** texts,        // array of C strings
+    size_t count,              // number of texts
+    float** out_embeddings,    // out: contiguous float array [count * dim]
+    size_t* out_dim            // out: embedding dimension
+);
+```
+
+**Returns:** `0` on success, `-1` on error. Caller frees with `seraph_floats_free(out_embeddings, count * out_dim)`.
+
+The output buffer is laid out as `[emb0[0..dim], emb1[0..dim], ..., emb_{count-1}[0..dim]]`.
+
+**Example:**
+
+```c
+const char* texts[] = {"first document", "second document", "third document"};
+float* embeddings = NULL;
+size_t dim = 0;
+
+int rc = seraph_encoder_encode_batch_flat(encoder, texts, 3, &embeddings, &dim);
+if (rc != 0) { /* handle error */ }
+
+// Access embedding for text i: embeddings + (i * dim), length dim
+for (size_t i = 0; i < 3; i++) {
+    float* emb_i = embeddings + (i * dim);
+    // use emb_i[0..dim]
+}
+
+seraph_floats_free(embeddings, 3 * dim);
+```
+
 ### `seraph_encoder_close`
 
 ```c

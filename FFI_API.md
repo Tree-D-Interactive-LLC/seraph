@@ -116,6 +116,16 @@ int seraph_store_sync(void* handle);
 
 Flush pending writes to disk. Returns `0` on success.
 
+### `seraph_store_set_search_visit_cap_multiplier`
+
+Set the BFS visit-cap multiplier at runtime. Higher values widen the search frontier at minimal latency cost (Phase-1 eigenframe scan dominates search time). The default is set by `search_visit_cap_multiplier` in the config JSON (5).
+
+```c
+int seraph_store_set_search_visit_cap_multiplier(void* handle, uint32_t multiplier);
+```
+
+**Returns:** `0` on success, `-1` on error.
+
 ---
 
 ## Encryption
@@ -383,6 +393,20 @@ char* seraph_store_eigenframes(void* handle);
 ```
 
 **Returns:** JSON array of full frame objects for all eigenframes.
+
+### `seraph_store_federation_vector`
+
+Mean of all eigenframe embeddings — a single vector representing the store's semantic center. Used for federation routing (D2 dispatch).
+
+```c
+int seraph_store_federation_vector(
+    void* handle,
+    float** out_embedding,   // out: float array (caller frees with seraph_floats_free)
+    size_t* out_dim          // out: dimensionality
+);
+```
+
+**Returns:** `0` on success. If the store has no eigenframes, `out_embedding` is set to `NULL` and `out_dim` to `0` (still returns `0`). Returns `-1` on error (null handle).
 
 ### `seraph_store_model_id`
 

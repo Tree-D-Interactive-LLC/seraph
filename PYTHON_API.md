@@ -302,6 +302,18 @@ The embedding model ID declared at genesis.
 
 Embedding dimensionality.
 
+### `store.federation_vector() -> list[float] | None`
+
+Mean of all eigenframe embeddings — a single vector representing the store's semantic center. Used for federation routing (D2 dispatch). Returns `None` if the store has no eigenframes.
+
+### `store.set_search_visit_cap_multiplier(multiplier)`
+
+Set the BFS visit-cap multiplier at runtime. Higher values widen the search frontier at minimal latency cost (Phase-1 eigenframe scan dominates search time). The default is set by `StoreConfig.search_visit_cap_multiplier` (5).
+
+| Param | Type | Description |
+|-------|------|-------------|
+| `multiplier` | `int` | New visit-cap multiplier (e.g., `10` for wider search) |
+
 ### `store.stats() -> StoreStats`
 
 Store statistics: `.total_frames`, `.active_frames`, `.eigenframes`, `.seeds`, `.superseded`, `.redirects`, `.model_id`.

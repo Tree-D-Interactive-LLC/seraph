@@ -12,76 +12,63 @@ SERAPH is a storage and retrieval engine that organizes content through emergent
 
 Download the latest release for your platform from [Releases](https://github.com/Tree-D-Interactive/seraph-releases/releases).
 
-Each release includes CPU, GPU, and ONNX library builds and the CLI, organized by platform:
+Each release includes GPU and ONNX library builds and the CLI, organized by platform:
 
 ```
 seraph-<version>/
 ├── ffi/
 │   ├── windows-x86_64/
-│   │   ├── seraph.dll                     (CPU runtime)
-│   │   └── seraph.dll.lib                 (MSVC import lib)
-│   ├── windows-x86_64-gpu/
-│   │   ├── seraph.dll                     (GPU runtime — candle CUDA)
+│   │   ├── seraph.dll                     (GPU candle, auto CPU fallback)
 │   │   └── seraph.dll.lib                 (MSVC import lib)
 │   ├── windows-x86_64-onnx/
-│   │   ├── seraph.dll                     (GPU runtime — ONNX Runtime CUDA EP)
-│   │   ├── seraph.dll.lib                 (MSVC import lib)
-│   │   ├── onnxruntime.dll                (ORT core runtime)
-│   │   ├── onnxruntime_providers_cuda.dll (ORT CUDA execution provider)
-│   │   └── onnxruntime_providers_shared.dll
-│   ├── linux-x86_64/libseraph.so          (CPU)
-│   ├── linux-x86_64-gpu/libseraph.so      (GPU — candle CUDA)
-│   └── linux-x86_64-onnx/
-│       ├── libseraph.so                   (GPU — ONNX Runtime CUDA EP)
-│       └── libonnxruntime*.so             (ORT runtime libs)
+│   │   ├── seraph.dll                     (ONNX Runtime CUDA EP)
+│   │   └── seraph.dll.lib                 (MSVC import lib)
+│   ├── linux-x86_64/libseraph.so          (GPU candle, auto CPU fallback)
+│   └── linux-x86_64-onnx/libseraph.so     (ONNX Runtime CUDA EP)
 ├── python/
-│   ├── windows-x86_64/seraph.pyd          (CPU)
-│   ├── windows-x86_64-gpu/seraph.pyd      (GPU — candle)
-│   ├── windows-x86_64-onnx/
-│   │   ├── seraph.pyd                     (GPU — ONNX Runtime)
-│   │   └── onnxruntime*.dll               (ORT runtime libs)
-│   ├── linux-x86_64/seraph.so             (CPU)
-│   ├── linux-x86_64-gpu/seraph.so         (GPU — candle)
-│   └── linux-x86_64-onnx/
-│       ├── seraph.so                      (GPU — ONNX Runtime)
-│       └── libonnxruntime*.so             (ORT runtime libs)
+│   ├── windows-x86_64/seraph.pyd          (GPU candle, auto CPU fallback)
+│   ├── windows-x86_64-onnx/seraph.pyd     (ONNX Runtime — ORT via pip)
+│   ├── linux-x86_64/seraph.so             (GPU candle, auto CPU fallback)
+│   └── linux-x86_64-onnx/seraph.so        (ONNX Runtime — ORT via pip)
 └── cli/
     ├── windows-x86_64/seraph.exe
     └── linux-x86_64/seraph
 ```
 
-Three compute backends are available. All expose the same API — only the encoder backend differs:
+Two compute backends are available. Both expose the same API — only the encoder backend differs. All builds include automatic CPU fallback when no GPU is available.
 
 | Variant | Backend | Best for |
 |---------|---------|----------|
-| **CPU** | candle (pure Rust) | Containers, CI, machines without GPU |
-| **GPU** | candle + CUDA | General GPU acceleration |
+| **GPU** | candle (pure Rust) + CUDA | General use. Zero native deps. Works everywhere. |
 | **ONNX** | ONNX Runtime CUDA EP | Maximum encoder throughput (~3x faster than candle GPU) |
 
-**ONNX builds are recommended** for production workloads with NVIDIA GPUs — they deliver significantly higher encode throughput. GPU (candle) builds are a lighter alternative without the ORT dependency. CPU builds are provided for containers and environments without GPU access.
+**ONNX builds are recommended** for production workloads with NVIDIA GPUs — they deliver significantly higher encode throughput. GPU (candle) builds are a lighter alternative without the ORT dependency. Both fall back to CPU automatically when no GPU is present.
 
 ### Compatibility Matrix
 
-| Platform | CPU | GPU (candle) | ONNX | Notes |
-|----------|:---:|:---:|:----:|-------|
-| Windows x86_64 | ✓ | ✓ | ✓ | GPU/ONNX require NVIDIA driver ≥ 520 |
-| Linux x86_64 | ✓ | ✓ | ✓ | GPU/ONNX require NVIDIA driver ≥ 520 |
-| macOS arm64 | ✓ | — | — | Apple Silicon; no CUDA support |
-| macOS x86_64 | ✓ | — | — | Intel Mac; no CUDA support |
+| Platform | GPU (candle) | ONNX | Notes |
+|----------|:---:|:----:|-------|
+| Windows x86_64 | ✓ | ✓ | GPU requires NVIDIA driver ≥ 520 |
+| Linux x86_64 | ✓ | ✓ | GPU requires NVIDIA driver ≥ 520 |
+| macOS arm64 | ✓ | — | Apple Silicon; CPU fallback only |
+| macOS x86_64 | ✓ | — | Intel Mac; CPU fallback only |
 
 **GPU requirements (candle and ONNX):**
 - NVIDIA GPU with compute capability ≥ 7.0 (Volta or newer)
 - NVIDIA driver ≥ 520 (CUDA 11.8+ runtime compatibility)
-- No separate CUDA toolkit install needed — both GPU backends load CUDA at runtime via the driver
+- No separate CUDA toolkit install needed for candle — it loads CUDA at runtime via the driver
 
-**Additional ONNX requirements:**
-- cuDNN 9.x (the `cudnn64_9.dll` / `libcudnn.so.9` family) must be on the library search path — either next to the binary or in the CUDA toolkit `bin/` directory
-- The bundled ORT DLLs must remain alongside `seraph.dll` / `seraph.pyd` — the engine loads them at runtime via `ORT_DYLIB_PATH` or adjacent-file discovery
-- If the CUDA EP fails to initialize (missing cuDNN, incompatible driver), the ONNX build falls back to CPU inference automatically
+**ONNX requirements:**
+- ONNX Runtime 1.19+ with CUDA EP — download from [ORT releases](https://github.com/microsoft/onnxruntime/releases), or install via vcpkg/nuget/apt
+- Place ORT libraries on your library search path, next to your binary, or set `ORT_DYLIB_PATH`
+- cuDNN 9.x (`cudnn64_9.dll` / `libcudnn.so.9`) for GPU acceleration
+- If the CUDA EP fails to initialize, encoding falls back to CPU automatically
+
+**ONNX Python builds** use `onnxruntime-gpu` as a pip dependency — install via `pip install seraph-db-onnx` and pip handles ORT automatically.
 
 **Versions locked in this release:**
 - Candle 0.10 (pure-Rust ML inference — GPU builds)
-- ONNX Runtime 1.26.0 with CUDA 13 EP (ONNX builds)
+- ONNX Runtime 1.19+ with CUDA EP (ONNX builds)
 - cudarc 0.19.7 (CUDA runtime loading — supports CUDA 11.8 through 13.x)
 - Python 3.13 (PyO3 bindings)
 
@@ -109,14 +96,16 @@ seraph license status
 
 ## Installation
 
-### Python (PyO3)
+### Python (pip)
 
-Download the Python module (`seraph.pyd` on Windows, `seraph.so` on Linux/macOS) and place it where Python can find it:
+The recommended way to install SERAPH for Python:
 
 ```bash
-# Copy into your project directory, or into site-packages:
-cp seraph.pyd .   # Windows
-cp seraph.so  .   # Linux / macOS
+# Standard build (candle GPU, auto CPU fallback)
+pip install seraph-db
+
+# ONNX build (maximum throughput, auto-installs onnxruntime-gpu)
+pip install seraph-db-onnx
 ```
 
 Then import directly:
@@ -125,7 +114,7 @@ Then import directly:
 import seraph
 ```
 
-> **Note:** The Python module and the C FFI library are separate downloads built from the same codebase. Use the Python module for Python projects; use the C FFI library for C, C++, Rust, or any language with a C FFI.
+> **Note:** The Python module and the C FFI library are separate builds from the same codebase. Use pip for Python projects; use the FFI release for C, C++, Rust, or any language with a C FFI.
 
 ### C / C++ (FFI)
 
@@ -147,7 +136,7 @@ The release ships `seraph.dll` and `seraph.dll.lib` (the MSVC import library). T
    cl /I. your_app.c /link /LIBPATH:path\to\ffi seraph.lib
    ```
 
-3. **Place `seraph.dll` where your executable can find it** — either next to the `.exe`, or on `PATH`. For GPU builds, the NVIDIA driver DLLs must also be loadable (they normally are if the driver is installed). For ONNX builds, keep the bundled `onnxruntime*.dll` files alongside `seraph.dll`.
+3. **Place `seraph.dll` where your executable can find it** — either next to the `.exe`, or on `PATH`. For ONNX builds, also ensure `onnxruntime.dll` is discoverable (next to your app, on PATH, or via `ORT_DYLIB_PATH`).
 
 > **CMake example:**
 > ```cmake
@@ -282,8 +271,8 @@ For licensing inquiries: **licensing@tree-d-interactive.net**
 
 ## Documentation
 
-- [Product overview](https://seraph-db.com)
-- [API Reference](https://seraph-db.com/docs)
+- [Product overview](https://www.seraph-db.com)
+- [API Reference](https://www.seraph-db.com/docs)
 
 ---
 

@@ -1,10 +1,6 @@
 # Release tooling — not for distribution
 release.sh
-package-wheels.sh
 CLAUDE.md
-wheel/
-wheel-onnx/
-dist-wheels/
 .venv-test/
 
 # Binary artifacts — published via GitHub Releases, not tracked in git

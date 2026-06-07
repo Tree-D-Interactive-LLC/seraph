@@ -272,7 +272,7 @@ For licensing inquiries: **licensing@tree-d-interactive.net**
 ## Documentation
 
 - [Product overview](https://www.seraph-db.com)
-- [API Reference](https://www.seraph-db.com/docs)
+
 
 ---
 

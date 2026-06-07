@@ -1542,10 +1542,10 @@ float seraph_store_seed_margin(void* handle, const char* frame_id);
 ### `seraph_store_steerability`
 
 ```c
-float seraph_store_steerability(void* handle, const float* query_emb, size_t len, const char* target_id);
+float seraph_store_steerability(void* handle, const float* query_embedding, size_t query_len, const char* target_id);
 ```
 
-**Parameters:** `handle` (`void*`, yes), `query_emb` (`const float*`, yes), `len` (`size_t`, yes), `target_id` (`const char*`, yes).
+**Parameters:** `handle` (`void*`, yes), `query_embedding` (`const float*`, yes), `query_len` (`size_t`, yes), `target_id` (`const char*`, yes).
 **Returns:** Steerability score for warping the query toward `target_id`. **Errors:** sentinel on dimension mismatch / missing target.
 
 ### `seraph_store_region_health`

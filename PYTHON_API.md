@@ -84,9 +84,8 @@ These rules hold for all functions unless an entry says otherwise:
 18. [Events & Subscriptions](#events--subscriptions)
 19. [Encoding](#encoding)
 20. [Batch Operations](#batch-operations)
-21. [Submission Agent & Sharding](#submission-agent--sharding)
-22. [Types Reference](#types-reference)
-23. [Enums Reference](#enums-reference)
+21. [Types Reference](#types-reference)
+22. [Enums Reference](#enums-reference)
 
 ---
 
@@ -268,13 +267,13 @@ StoreConfig(...) -> StoreConfig
 | `search_max_depth` | `int` | no | `50` | Maximum BFS depth during search. |
 | `search_visit_cap_multiplier` | `int` | no | `5` | Visit-cap multiplier for search. |
 | `redirect_per_frame` | `bool` | no | `True` | Emit one redirect per superseded source frame. |
-| `secure` | `str \| None` | no | `None` | Security posture: `"off"`, `"standard"` (alias `"on"`), `"gov"`, or `None` (auto-detect). |
+| `secure` | `str \| None` | no | `None` | Security posture: `"off"`, `"standard"` (alias `"on"`), or `None` (auto-detect). |
 | `eigen_matmul_min` | `int` | no | `256` | Minimum eigenframes for the matrix GEMV scan (`0` = always). |
 | `encryption_passphrase` | `str \| None` | no | `None` | Passphrase for AES-256-GCM encryption at rest. |
 
 **Returns:** `StoreConfig`. All fields are readable/writable attributes.
 
-**Raises:** `ValueError` if `secure` is set to an unrecognized string (expected `"off"`, `"standard"`/`"on"`, or `"gov"`).
+**Raises:** `ValueError` if `secure` is set to an unrecognized string (expected `"off"` or `"standard"`/`"on"`).
 
 ### `QuantizationRange(model_id, low, high, dim)`
 
@@ -2029,133 +2028,6 @@ Flush all buffered writes to disk and re-enable per-write fsync.
 
 ---
 
-## Submission Agent & Sharding
-
-> **Provisional — parity shims, not yet a committed public interface.** These
-> classes are implemented but exist to mirror the NDA Python reference. With the
-> Rust wheel, Python's GIL already serializes calls into `SeraphStore.put()`, so
-> they offer no additional guarantee over calling the store directly. In
-> particular, `ShardManager.merge` **re-ingests** user frames into a fresh store:
-> it computes new watermarks (original lineage is **not** preserved — source IDs
-> survive only as `source_frame_id` metadata) and does **not** carry over typed
-> structural edges. Their instance methods are intentionally omitted from the
-> per-method reference until this fidelity is finalized; only the constructors
-> are documented. Treat the surface as subject to change.
-
-### `SubmissionAgent.create(path, config, seed_data=[])`
-
-Create a store wrapped by a single-writer submission agent (static method).
-
-```python
-SubmissionAgent.create(path, config, seed_data=[]) -> SubmissionAgent
-```
-
-**Parameters**
-
-| Name | Type | Required | Default | Description |
-|---|---|---|---|---|
-| `path` | `str` | yes | -- | Filesystem path for the `.sfg` file. |
-| `config` | `StoreConfig` | yes | -- | Store configuration. |
-| `seed_data` | `list[tuple[str, list[float]]]` | no | `[]` | Initial seeds as `(label, embedding)` tuples. |
-
-**Returns:** `SubmissionAgent`.
-
-**Raises:** `RuntimeError` on create failure.
-
-### `SubmissionAgent.open(path)`
-
-Open an existing store under a submission agent (static method).
-
-```python
-SubmissionAgent.open(path) -> SubmissionAgent
-```
-
-**Parameters**
-
-| Name | Type | Required | Default | Description |
-|---|---|---|---|---|
-| `path` | `str` | yes | -- | Path to an existing `.sfg` file. |
-
-**Returns:** `SubmissionAgent`.
-
-**Raises:** `RuntimeError` on open failure.
-
-**SubmissionAgent instance API:**
-
-| Method | Signature | Description |
-|---|---|---|
-| `.submit(content, embedding)` | `(bytes, list[float]) -> str` | Ingest; blocks until committed. |
-| `.submit_with_metadata(content, embedding, metadata_json="{}")` | `(bytes, list[float], str) -> str` | Ingest with metadata; blocks. |
-| `.submit_async(content, embedding)` | `(bytes, list[float]) -> AsyncResult` | Ingest asynchronously. |
-| `.add_seed(label, embedding, metadata_json="{}")` | `(str, list[float], str) -> str` | Add a seed; blocks. |
-| `.search(query_embedding, top_k, tau)` | `(list[float], int, float) -> list[Hit]` | Read passthrough (locks the store briefly). |
-| `.stats()` | `() -> StoreStats` | Read passthrough. |
-| `.verify()` | `() -> tuple[bool, list[str]]` | Read passthrough. |
-| `.frame_ids()` | `() -> list[str]` | Read passthrough. |
-| `.model_id()` | `() -> str` | Read passthrough. |
-| `.dim()` | `() -> int` | Read passthrough. |
-| `.close()` | `() -> None` | Close the agent. |
-
-> Note: `submit`, `submit_with_metadata`, and `add_seed` have positional parameters with no PyO3 defaults except `metadata_json="{}"`; `search` requires explicit `top_k` and `tau` (no defaults).
-
-### `AsyncResult`
-
-Future-like handle returned by `SubmissionAgent.submit_async`. Mirrors a subset of `concurrent.futures.Future`.
-
-| Method | Signature | Description |
-|---|---|---|
-| `.result(timeout=None)` | `(float \| None) -> str` | Block until the async submit completes; returns the frame ID. `timeout` is currently ignored. |
-| `.done()` | `() -> bool` | `True` if the worker thread has finished. |
-
-**Raises:** `.result()` raises `RuntimeError` if already consumed, if the submit failed, or if the worker thread panicked.
-
-### `ShardConfig(shard_id, model_id="BAAI/bge-small-en-v1.5", seeds=[])`
-
-Shard configuration.
-
-```python
-ShardConfig(shard_id, model_id="BAAI/bge-small-en-v1.5", seeds=[]) -> ShardConfig
-```
-
-**Parameters**
-
-| Name | Type | Required | Default | Description |
-|---|---|---|---|---|
-| `shard_id` | `str` | yes | -- | Shard identifier. |
-| `model_id` | `str` | no | `"BAAI/bge-small-en-v1.5"` | Embedding model identifier. |
-| `seeds` | `list[tuple[str, list[float]]]` | no | `[]` | Seeds as `(label, embedding)` tuples. |
-
-**Returns:** `ShardConfig`. Fields `.shard_id`, `.model_id`, `.seeds` are readable/writable.
-
-### `ShardManager(base_dir, config)`
-
-Manager over distributed shards.
-
-```python
-ShardManager(base_dir, config) -> ShardManager
-```
-
-**Parameters**
-
-| Name | Type | Required | Default | Description |
-|---|---|---|---|---|
-| `base_dir` | `str` | yes | -- | Base directory holding shard files. |
-| `config` | `ShardConfig` | yes | -- | Shard configuration. |
-
-**Returns:** `ShardManager`.
-
-**Raises:** `RuntimeError` on init failure.
-
-**ShardManager instance API:**
-
-| Method | Signature | Description |
-|---|---|---|
-| `.shard(shard_id)` | `(str) -> SubmissionAgent` | Get or create a shard; returns its agent. |
-| `.merge(output_path)` | `(str) -> SeraphStore` | Merge all open shards into a unified store. |
-| `.close()` | `() -> None` | Close all open shards. |
-
----
-
 ## Value & Result Type Methods
 
 These auxiliary value/result types carry callable helper methods in addition to
@@ -2206,7 +2078,7 @@ All types below are registered PyO3 classes (verified against `py.rs` getters).
 
 | Type | Key Fields / Members |
 |------|------|
-| `Frame` | `.id`, `.parent_id`, `.status`, `.content`, `.embedding`, `.metadata` (dict), `.metadata_json` (str), `.watermark`, `.content_hash`, `.in_degree`, `.model_id`, `.timestamp`, `.status_ref`, `.status_sources`, `.customer_uuid`, `.writer_signature`, `.marking_bytes`, `.snippet`; methods `.is_active_content()`, `.is_consolidation_exempt()`, `.is_eigenframe()`, `.is_redirect()` |
+| `Frame` | `.id`, `.parent_id`, `.status`, `.content`, `.embedding`, `.metadata` (dict), `.metadata_json` (str), `.watermark`, `.content_hash`, `.in_degree`, `.model_id`, `.timestamp`, `.status_ref`, `.status_sources`, `.customer_uuid`, `.writer_signature`, `.snippet`; methods `.is_active_content()`, `.is_consolidation_exempt()`, `.is_eigenframe()`, `.is_redirect()` |
 | `Hit` | `.frame_id`, `.score`, `.confidence`, `.path_length`, `.snippet`, `.content`, `.frame` |
 | `TraceEntry` | `.frame_id`, `.depth`, `.score`, `.visit_order`, `.source`, `.parent_id` |
 | `Chain` | `.frames`, `.frame_ids`, `.primitive`, `.segments`, `.coherence` |
@@ -2235,14 +2107,10 @@ All types below are registered PyO3 classes (verified against `py.rs` getters).
 | `StructuralHit` | `.frame_id`, `.relation_slot`, `.weight`, `.direction` |
 | `GradientPoint` | `.frame_id`, `.similarity`, `.delta` |
 | `WriterAudit` | `.writers`, `.genesis_customer_uuid`, `.cross_customer_writes`, `.unsigned_frame_count`, `.sealed`, `.seal_frame_id` |
-| `AttestationAudit` | `.chain_valid`, `.genesis_seed_matches`, `.operator_identity`, `.operator_identity_signing_key_id`, `.anchor`, `.secure_mode`, `.sealed`, `.writers`, `.cross_customer_writes`, `.unsigned_frame_count`, `.invalid_signature_count`, `.post_seal_frame_count`, `.all_ok`, `.failures` |
+| `AttestationAudit` | `.chain_valid`, `.genesis_seed_matches`, `.anchor`, `.secure_mode`, `.sealed`, `.writers`, `.cross_customer_writes`, `.unsigned_frame_count`, `.invalid_signature_count`, `.post_seal_frame_count`, `.all_ok`, `.failures` |
 | `WarpSpec` | `.profile`, `.bound_k`, `.accumulation` (read-only getters) |
 | `WarpCalibration` | `.dim`, `.model_id`, `.n_queries`, `.n_targets`, `.sweep`, `.action_floor`, `.routing`, `.sub_saturation`, `.saturation`, `.recommended_bound_k`; methods `.summary()`, `.as_named_magnitudes()` |
 | `WarpCalibrationPoint` | `.magnitude`, `.mean_jaccard`, `.std_jaccard`, `.mean_hits`, `.zero_result_pct` |
-| `SubmissionAgent` | (see [Submission Agent & Sharding](#submission-agent--sharding)) |
-| `AsyncResult` | `.result(timeout=None)`, `.done()` |
-| `ShardConfig` | `.shard_id`, `.model_id`, `.seeds` |
-| `ShardManager` | `.shard()`, `.merge()`, `.close()` |
 | `Encoder` | `.encode()`, `.encode_batch()`, `.dim`, `.model_id`, `.modality`; static `.from_pretrained()` |
 | `PromoteEvent` | `.frame_id`, `.in_degree`, `.trigger` |
 | `ContradictionEvent` | `.new_frame`, `.contradicted_pairs`, `.population` |
@@ -2259,9 +2127,7 @@ All types below are registered PyO3 classes (verified against `py.rs` getters).
 | Enum | Values | Notes / methods |
 |------|--------|------|
 | `FrameStatus` | `Active`, `Eigenframe`, `Superseded`, `Redirect`, `Genesis`, `Seed`, `System` | Methods: `.is_consolidation_exempt()`, `.is_eigenframe()`, `.is_redirect()` |
-| `Tier` | `AUTO`, `COARSE`, `MEDIUM`, `FINE`, `NONE` | Search pre-filter tier (used via `SearchOpts`) |
-| `LicenseTier` | `Free` (0x00), `Commercial` (0x01), `Enterprise` (0x02), `Test` (0xFF) | Method: `.name()` |
-| `Direction` | `Outgoing`, `Incoming`, `Both` | — |
+| `Tier` | `AUTO`, `COARSE`, `MEDIUM`, `FINE`, `NONE` | Search pre-filter tier (used via `SearchOpts`) || `Direction` | `Outgoing`, `Incoming`, `Both` | — |
 | `ScoreCombine` | `Multiply`, `Min`, `Max`, `KeepInput` | — |
 | `MergeStrategy` | `Geometric`, `Semantic` | `Semantic` raises — no bundled LLM synthesis |
 | `RelationFlags` | `Active` (0x01), `Deprecated` (0x02), `Bidirectional` (0x04), `AsymmetricInverse` (0x08) | Bit values for `declare_relation(name, flags)` |

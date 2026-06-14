@@ -4,6 +4,11 @@
 
 SERAPH is a storage and retrieval engine that organizes content through emergent geometric structure rather than explicit schemas. It provides cryptographic provenance, semantic search, and chain-of-custody guarantees from genesis to tip.
 
+**New in 0.2.0**
+
+- **TurboQuant storage** — 4-bit codes are the canonical embedding, so stores are **~4× smaller** (up to ~8× on short content) with **sub-millisecond search** at scale.
+- **Bring-your-own encoder, zero setup** — any embedding model works out of the box with **no calibration** and nothing per-encoder to configure or persist. The quantizer is universal, so stores are self-describing and portable across machines.
+
 ---
 
 ## Quick Start
@@ -46,12 +51,14 @@ Two compute backends are available. Both expose the same API — only the encode
 
 ### Compatibility Matrix
 
+Prebuilt binaries and wheels in this release cover **Windows** and **Linux x86_64**.
+
 | Platform | GPU (candle) | ONNX | Notes |
 |----------|:---:|:----:|-------|
 | Windows x86_64 | ✓ | ✓ | GPU requires NVIDIA driver ≥ 520 |
 | Linux x86_64 | ✓ | ✓ | GPU requires NVIDIA driver ≥ 520 |
-| macOS arm64 | ✓ | — | Apple Silicon; CPU fallback only |
-| macOS x86_64 | ✓ | — | Intel Mac; CPU fallback only |
+
+> macOS is not shipped as a prebuilt binary or wheel in this release — build from source (candle, CPU only).
 
 **GPU requirements (candle and ONNX):**
 - NVIDIA GPU with compute capability ≥ 7.0 (Volta or newer)
@@ -70,7 +77,7 @@ Two compute backends are available. Both expose the same API — only the encode
 - Candle 0.10 (pure-Rust ML inference — GPU builds)
 - ONNX Runtime 1.19+ with CUDA EP (ONNX builds)
 - cudarc 0.19.7 (CUDA runtime loading — supports CUDA 11.8 through 13.x)
-- Python 3.13 (PyO3 bindings)
+- Python 3.8+ (abi3 wheels — `cp38-abi3`; built with 3.13)
 
 ### 2. Activate Your License
 
@@ -235,7 +242,8 @@ The boundary between Commercial and Enterprise is the **location and control of 
 | **Ingestion & Search** | | | |
 | Frame ingestion (`put`) | ✓ | ✓ | ✓ |
 | Semantic search (two-phase eigenframe + traversal) | ✓ | ✓ | ✓ |
-| Tiered pre-filter (coarse / medium / auto) | ✓ | ✓ | ✓ |
+| TurboQuant compact storage (4-bit codes, ~4× smaller) | ✓ | ✓ | ✓ |
+| Sub-millisecond search at scale | ✓ | ✓ | ✓ |
 | Batch operations | ✓ | ✓ | ✓ |
 | **Graph & Topology** | | | |
 | Eigenframe promotion | ✓ | ✓ | ✓ |
@@ -250,8 +258,9 @@ The boundary between Commercial and Enterprise is the **location and control of 
 | Warp (query steering) | ✓ | ✓ | ✓ |
 | Analysis & metrics | ✓ | ✓ | ✓ |
 | **Encoding** | | | |
-| Built-in encoder (candle / ONNX Runtime) | ✓ | ✓ | ✓ |
+| Built-in encoders — bge-small (384d) / bge-base (768d) | ✓ | ✓ | ✓ |
 | Encode-and-put / encode-and-search | ✓ | ✓ | ✓ |
+| Bring-your-own encoder (any model, no calibration) | ✓ | ✓ | ✓ |
 | **Events & Observability** | | | |
 | Event subscriptions | ✓ | ✓ | ✓ |
 | Writer audit / provenance | ✓ | ✓ | ✓ |

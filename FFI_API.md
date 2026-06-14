@@ -304,6 +304,40 @@ int seraph_store_set_search_visit_cap_multiplier(void* handle, uint32_t multipli
 seraph_store_set_search_visit_cap_multiplier(store, 10);  // wider frontier
 ```
 
+### `seraph_reencode_store`
+
+Re-encode a source store into a fresh **v3** destination store (`format_version = 3`). Streams active-content frames from `src_path`, re-encodes them with `model_id` on a dedicated encoder thread, and bulk-ingests the resulting f32 embeddings via the batched snapshot path. The `.gidx` is not written (frame log only); similarity edges reconstruct from the log on the first open.
+
+```c
+int seraph_reencode_store(
+    const char* src_path,
+    const char* dst_path,
+    const char* model_id,
+    uint32_t eigen_threshold,
+    size_t n_max,
+    size_t pbatch,
+    size_t ebatch,
+    size_t* out_n
+);
+```
+
+**Parameters**
+
+| Name | Type | Required | Description |
+|---|---|---|---|
+| `src_path` | `const char*` | yes | Source `.sfg` to re-encode from. |
+| `dst_path` | `const char*` | yes | Destination `.sfg` (overwritten if present). |
+| `model_id` | `const char*` | yes | Embedding model for the destination genesis. |
+| `eigen_threshold` | `uint32_t` | yes | In-degree promotion threshold for the destination. |
+| `n_max` | `size_t` | yes | Cap on frames re-encoded; `0` = all active-content frames. |
+| `pbatch` | `size_t` | yes | Frames per `put_batch`; `0` → default 2000. |
+| `ebatch` | `size_t` | yes | Frames per encode batch; `0` → default 16. |
+| `out_n` | `size_t*` | no | Out: number of frames ingested. Ignored if `NULL`. |
+
+**Returns:** `0` on success, `-1` on error.
+
+**Errors:** `-1` (with `seraph_last_error()` set) on `NULL` path/model strings, an unreadable source, or an encode/ingest failure.
+
 ---
 
 ## Encryption
@@ -1883,6 +1917,100 @@ char* seraph_store_structural_neighbors(
 char* json = seraph_store_structural_neighbors(store, fid, NULL, "both");
 seraph_string_free(json);
 ```
+
+### `seraph_store_filter_by_relation`
+
+Filter a hit list by structural-relation presence.
+
+```c
+char* seraph_store_filter_by_relation(
+    void* handle,
+    const char* hits_json,
+    const char* relations_json,
+    const char* direction,
+    bool require_present
+);
+```
+
+**Parameters**
+
+| Name | Type | Required | Description |
+|---|---|---|---|
+| `handle` | `void*` | yes | Store handle. |
+| `hits_json` | `const char*` | yes | JSON array of `{"frame_id": "...", "score": 0.9}` objects. |
+| `relations_json` | `const char*` | yes | JSON array of relation names. |
+| `direction` | `const char*` | yes | `"outgoing"`, `"incoming"`, or `"both"`. |
+| `require_present` | `bool` | yes | If `true`, keep hits that HAVE a matching relation; if `false`, keep hits that LACK one. |
+
+**Returns:** JSON array of `{"frame_id","score"}` objects (free with `seraph_string_free`), or `NULL` on error.
+
+**Errors:** `NULL` on `NULL` handle or `NULL` `hits_json` / `relations_json`.
+
+### `seraph_store_structural_expand`
+
+Expand a hit list by one hop along structural relations (pipeline composition).
+
+```c
+char* seraph_store_structural_expand(
+    void* handle,
+    const char* hits_json,
+    const char* relations_json,
+    const char* direction,
+    const char* score_combine
+);
+```
+
+**Parameters**
+
+| Name | Type | Required | Description |
+|---|---|---|---|
+| `handle` | `void*` | yes | Store handle. |
+| `hits_json` | `const char*` | yes | JSON array of `{"frame_id": "...", "score": 0.9}` objects. |
+| `relations_json` | `const char*` | yes | JSON array of relation names. |
+| `direction` | `const char*` | yes | `"outgoing"`, `"incoming"`, or `"both"`. |
+| `score_combine` | `const char*` | yes | `"multiply"`, `"min"`, `"max"`, or `"keep_input"` (unrecognized values default to `keep_input`). |
+
+**Returns:** JSON array of `{"frame_id","score"}` objects (free with `seraph_string_free`), or `NULL` on error.
+
+**Errors:** `NULL` on `NULL` handle or `NULL` `hits_json` / `relations_json`.
+
+### `seraph_store_gradient`
+
+Compute the semantic gradient along an ordered chain of frame IDs.
+
+```c
+char* seraph_store_gradient(void* handle, const char* chain_json);
+```
+
+**Parameters**
+
+| Name | Type | Required | Description |
+|---|---|---|---|
+| `handle` | `void*` | yes | Store handle. |
+| `chain_json` | `const char*` | yes | JSON array of frame-id strings. |
+
+**Returns:** JSON array of `{"frame_id": "...", "similarity": 0.9, "delta": 0.1}` objects, one per chain step (free with `seraph_string_free`), or `NULL` on error.
+
+**Errors:** `NULL` on `NULL` handle, `NULL` `chain_json`, or malformed JSON.
+
+### `seraph_store_constitutive_score`
+
+Constitutive score for a chain: `1 - jaccard(chain_intermediates, midpoint_NN)`. Values below `0.20` indicate the chain carries constitutive information beyond what a midpoint search would surface.
+
+```c
+float seraph_store_constitutive_score(void* handle, const char* chain_json);
+```
+
+**Parameters**
+
+| Name | Type | Required | Description |
+|---|---|---|---|
+| `handle` | `void*` | yes | Store handle. |
+| `chain_json` | `const char*` | yes | JSON array of frame-id strings. |
+
+**Returns:** The `float` constitutive score.
+
+**Errors:** `f32::NAN` sentinel on `NULL` handle, `NULL` `chain_json`, or malformed JSON — check `seraph_last_error()`.
 
 ---
 

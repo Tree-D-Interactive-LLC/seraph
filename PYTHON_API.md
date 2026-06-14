@@ -245,7 +245,7 @@ store.put(b"sensitive content", embedding)   # encrypted transparently
 
 ## Configuration
 
-### `StoreConfig(model_id="BAAI/bge-small-en-v1.5", eigen_threshold=5, eigen_min_age_s=60.0, tau_similarity=0.5, tau_merge=0.92, max_index_elements=100000, custom_range=None, search_max_depth=50, search_visit_cap_multiplier=5, redirect_per_frame=True, secure=None, eigen_matmul_min=256, encryption_passphrase=None)`
+### `StoreConfig(model_id="BAAI/bge-small-en-v1.5", eigen_threshold=5, eigen_min_age_s=60.0, tau_similarity=0.5, tau_merge=0.92, max_index_elements=100000, custom_range=None, search_max_depth=50, search_visit_cap_multiplier=20, redirect_per_frame=True, secure=None, eigen_matmul_min=256, encryption_passphrase=None, search_use_stream=False, search_stream_threshold=50000, search_stream_beam=16)`
 
 Store configuration object.
 
@@ -265,11 +265,14 @@ StoreConfig(...) -> StoreConfig
 | `max_index_elements` | `int` | no | `100000` | Max elements in the graph index. |
 | `custom_range` | `QuantizationRange \| None` | no | `None` | Custom quantization range for unknown models; `None` looks up the bundled table by `model_id`. |
 | `search_max_depth` | `int` | no | `50` | Maximum BFS depth during search. |
-| `search_visit_cap_multiplier` | `int` | no | `5` | Visit-cap multiplier for search. |
+| `search_visit_cap_multiplier` | `int` | no | `20` | Visit-cap multiplier for search. |
 | `redirect_per_frame` | `bool` | no | `True` | Emit one redirect per superseded source frame. |
 | `secure` | `str \| None` | no | `None` | Security posture: `"off"`, `"standard"` (alias `"on"`), or `None` (auto-detect). |
 | `eigen_matmul_min` | `int` | no | `256` | Minimum eigenframes for the matrix GEMV scan (`0` = always). |
 | `encryption_passphrase` | `str \| None` | no | `None` | Passphrase for AES-256-GCM encryption at rest. |
+| `search_use_stream` | `bool` | no | `False` | EXPERIMENTAL: force the trace-free gradient-beam stream read path regardless of store size. Runtime — not persisted. |
+| `search_stream_threshold` | `int` | no | `50000` | Frame-count threshold at/above which `search` auto-uses the stream (`0` disables the auto-gate). Runtime — not persisted. |
+| `search_stream_beam` | `int` | no | `16` | Stream beam width (`0` = unbounded). Runtime — not persisted. |
 
 **Returns:** `StoreConfig`. All fields are readable/writable attributes.
 
@@ -446,8 +449,6 @@ store.search(query_embedding, top_k=10, tau=0.5) -> list[Hit]
 
 **Raises:** `RuntimeError` on dimension mismatch or a closed store.
 
-> Plain `search()` does **not** apply tier pre-filtering. Use `search_with_opts`, `search_by_vector`, or `search_text` for tier control.
-
 **Example**
 
 ```python
@@ -458,7 +459,7 @@ for hit in store.search(q, top_k=5, tau=0.4):
 
 ### `store.search_with_opts(query_embedding, opts)`
 
-Search using a `SearchOpts` dataclass. Honors `top_k`, `tau_similarity`, and `tier` / `tier_auto_threshold`.
+Search using a `SearchOpts` dataclass. Honors `top_k`, `tau_similarity`, `max_depth`, and `include_superseded`.
 
 ```python
 store.search_with_opts(query_embedding, opts) -> list[Hit]
@@ -579,12 +580,12 @@ store.search_with_warp_spec(query_embedding, spec, top_k=10, tau=0.5, magnitude_
 
 **Raises:** `RuntimeError` on unresolved frame-id/magnitude, dimension mismatch, or a closed store.
 
-### `SearchOpts(top_k=10, tau_similarity=0.5, max_depth=50, include_superseded=False, tier=Tier.AUTO, tier_auto_threshold=10000)`
+### `SearchOpts(top_k=10, tau_similarity=0.5, max_depth=50, include_superseded=False)`
 
 Ergonomic search-options dataclass.
 
 ```python
-SearchOpts(top_k=10, tau_similarity=0.5, max_depth=50, include_superseded=False, tier=Tier.AUTO, tier_auto_threshold=10000) -> SearchOpts
+SearchOpts(top_k=10, tau_similarity=0.5, max_depth=50, include_superseded=False) -> SearchOpts
 ```
 
 **Parameters**
@@ -595,12 +596,10 @@ SearchOpts(top_k=10, tau_similarity=0.5, max_depth=50, include_superseded=False,
 | `tau_similarity` | `float` | no | `0.5` | Similarity threshold. |
 | `max_depth` | `int` | no | `50` | Accepted for parity; not honored (depth comes from `StoreConfig.search_max_depth`). |
 | `include_superseded` | `bool` | no | `False` | Accepted for parity; not honored (`search` never returns superseded frames). |
-| `tier` | `Tier` | no | `Tier.AUTO` | Pre-filter tier (`COARSE`/`MEDIUM`/`AUTO`-above-threshold apply quantized pre-filtering; `FINE`/`NONE` skip it). |
-| `tier_auto_threshold` | `int` | no | `10000` | Frame count above which `AUTO` activates tiered pre-filtering. |
 
 **Returns:** `SearchOpts`. All fields are readable/writable attributes.
 
-> `SearchOpts` only takes effect through `search_with_opts`, `search_by_vector`, and `search_text`. Plain `search(...)` ignores tier pre-filtering.
+> `SearchOpts` takes effect through `search_with_opts`, `search_by_vector`, and `search_text`.
 
 ---
 
@@ -1791,6 +1790,30 @@ seraph.verify_chain(frames, genesis_seed=None) -> tuple[bool, str | None]
 
 **Raises:** Does not raise (returns the failure tuple instead).
 
+### `seraph.reencode_store(src_path, dst_path, model_id, eigen_threshold, n_max=0, pbatch=2000, ebatch=16)`
+
+Module-level bulk builder. Stream every active-content frame out of the store at `src_path`, re-encode it with `model_id`, and ingest the fresh embeddings into a new TurboQuant store at `dst_path` — entirely in Rust, with the GIL released for the whole build. Encode (GPU) overlaps ingest (CPU) on native threads and embeddings never cross the Python boundary, so throughput approaches the raw encode ceiling instead of serializing encode against `put_batch`. The `.gidx` sidecar is not written; similarity edges reconstruct from the frame log on first open.
+
+```python
+seraph.reencode_store(src_path, dst_path, model_id, eigen_threshold, n_max=0, pbatch=2000, ebatch=16) -> int
+```
+
+**Parameters**
+
+| Name | Type | Required | Default | Description |
+|---|---|---|---|---|
+| `src_path` | `str` | yes | -- | Path to the source `.sfg` store to re-encode from. |
+| `dst_path` | `str` | yes | -- | Path to the destination store to create (overwritten if it exists). |
+| `model_id` | `str` | yes | -- | Embedding model for the destination store (fixed at genesis). |
+| `eigen_threshold` | `int` | yes | -- | In-degree threshold for eigenframe promotion in the destination. |
+| `n_max` | `int` | no | `0` | Cap on frames ingested (`0` = all). |
+| `pbatch` | `int` | no | `2000` | `put_batch` accumulation size (frames per ingest batch). |
+| `ebatch` | `int` | no | `16` | Encoder batch size (content chunks per encode call). |
+
+**Returns:** `int` — number of frames ingested into the destination store.
+
+**Raises:** `RuntimeError` if the source cannot be opened, the destination cannot be created, or encoding fails.
+
 ---
 
 ## Anchoring
@@ -2087,7 +2110,7 @@ All types below are registered PyO3 classes (verified against `py.rs` getters).
 | `StoreConfig` | (constructor fields above; all readable/writable) |
 | `StoreStats` | `.total_frames`, `.active_frames`, `.eigenframes`, `.seeds`, `.redirects`, `.superseded`, `.model_id` |
 | `QuantizationRange` | `.model_id`, `.low`, `.high`, `.dim` |
-| `SearchOpts` | `.top_k`, `.tau_similarity`, `.max_depth`, `.include_superseded`, `.tier`, `.tier_auto_threshold` |
+| `SearchOpts` | `.top_k`, `.tau_similarity`, `.max_depth`, `.include_superseded` |
 | `RelationMask` | `.slots`; `.contains()`, `.is_empty()`, `.union()`, `.intersect()`; statics `.from_slots()`, `.empty()`, `.semantic_only()`, `.structural_only()` |
 | `TypedEdgeView` | `.from_hash`, `.to_hash`, `.slot`, `.weight`, `.asserted_by_wm`, `.asserted_by` (alias), `.edge_flags`, `.edge_offset` |
 | `NeighborhoodResult` | `.consensus`, `.geometric`, `.lineage`, `.tau_used`, `.hops_used`; methods `.union()`, `.ranked()`, `.divergence()` |
@@ -2127,7 +2150,7 @@ All types below are registered PyO3 classes (verified against `py.rs` getters).
 | Enum | Values | Notes / methods |
 |------|--------|------|
 | `FrameStatus` | `Active`, `Eigenframe`, `Superseded`, `Redirect`, `Genesis`, `Seed`, `System` | Methods: `.is_consolidation_exempt()`, `.is_eigenframe()`, `.is_redirect()` |
-| `Tier` | `AUTO`, `COARSE`, `MEDIUM`, `FINE`, `NONE` | Search pre-filter tier (used via `SearchOpts`) || `Direction` | `Outgoing`, `Incoming`, `Both` | — |
+| `Direction` | `Outgoing`, `Incoming`, `Both` | — |
 | `ScoreCombine` | `Multiply`, `Min`, `Max`, `KeepInput` | — |
 | `MergeStrategy` | `Geometric`, `Semantic` | `Semantic` raises — no bundled LLM synthesis |
 | `RelationFlags` | `Active` (0x01), `Deprecated` (0x02), `Bidirectional` (0x04), `AsymmetricInverse` (0x08) | Bit values for `declare_relation(name, flags)` |

@@ -603,6 +603,126 @@ SearchOpts(top_k=10, tau_similarity=0.5, max_depth=50, include_superseded=False)
 
 ---
 
+## Federation
+
+Route a query across many independent single-file stores and fan out search in
+parallel. A federation holds no state of its own — point it at a directory of
+`.sfg` files, or add them by path. All member stores must share the same embedding
+model and dimension (enforced at add).
+
+### `Federation.open_dir(dir)`
+
+Open every `.sfg` store in a directory as a federation, named by file stem
+(`physics.sfg` → `"physics"`); files starting with `_` or `router` are skipped.
+
+```python
+Federation.open_dir(dir) -> Federation
+```
+
+**Parameters**
+
+| Name | Type | Required | Description |
+|---|---|---|---|
+| `dir` | `str` | yes | Directory containing the member `.sfg` files. |
+
+**Returns:** `Federation`.
+
+```python
+fed = seraph.Federation.open_dir("/data/federation")
+hits = fed.search(query_emb, top_k=10, tau=0.60, mode="best")
+```
+
+### `Federation()`
+
+Create an empty federation. Add stores with `add_path`.
+
+```python
+Federation() -> Federation
+```
+
+**Returns:** `Federation`.
+
+### `Federation.add_path(name, path)`
+
+Register a store file under `name`. The store must share the federation's
+embedding model and dimension.
+
+```python
+fed.add_path(name, path) -> None
+```
+
+**Parameters**
+
+| Name | Type | Required | Description |
+|---|---|---|---|
+| `name` | `str` | yes | Federation-local label for the store. |
+| `path` | `str` | yes | Path to the `.sfg` file. |
+
+**Returns:** `None`. Raises on model/dimension mismatch.
+
+### `Federation.member_names()`
+
+Member store names, in add order.
+
+```python
+fed.member_names() -> list[str]
+```
+
+**Returns:** `list[str]`.
+
+### `Federation.refresh()`
+
+Re-pull routing vectors for any member that promoted an eigenframe since the last
+refresh (flagged via the store's `promote` event). Cheap — only changed members.
+
+```python
+fed.refresh() -> bool
+```
+
+**Returns:** `bool` — `True` if the router changed.
+
+### `Federation.route(query, top_stores)`
+
+Route the query to the top `top_stores` members without searching them.
+
+```python
+fed.route(query, top_stores) -> list[tuple[str, float]]
+```
+
+**Parameters**
+
+| Name | Type | Required | Description |
+|---|---|---|---|
+| `query` | `list[float]` | yes | Query embedding. |
+| `top_stores` | `int` | yes | Number of stores to return. |
+
+**Returns:** `list[(store_name, score)]`.
+
+### `Federation.search(query, top_k, tau, mode='best', n=3)`
+
+Route and fan out search across the selected stores in parallel, merging results by
+cosine score. `mode` is `"best"` (single best store), `"top"` (top-`n` stores), or
+`"all"` (every store). Each routed store returns `top_k`; results truncate to `top_k`.
+
+```python
+fed.search(query, top_k, tau, mode='best', n=3) -> list[FederatedHit]
+```
+
+**Parameters**
+
+| Name | Type | Required | Description |
+|---|---|---|---|
+| `query` | `list[float]` | yes | Query embedding. |
+| `top_k` | `int` | yes | Number of results to return. |
+| `tau` | `float` | yes | Similarity threshold. |
+| `mode` | `str` | no | `"best"`, `"top"`, or `"all"` (default `"best"`). |
+| `n` | `int` | no | Stores for `"top"` mode (default `3`). |
+
+**Returns:** `list[FederatedHit]` — each with `.store`, `.frame_id`, `.score`,
+`.confidence`, `.path_length`, `.content`, `.snippet`.
+
+---
+
 ## Frame Access
 
 ### `store.get_frame(frame_id)`

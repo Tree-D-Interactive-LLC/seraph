@@ -2745,6 +2745,172 @@ seraph_store_commit(store);
 
 ---
 
+## Federation
+
+Route a query across many independent single-file stores and fan out search in
+parallel. A federation holds no state of its own — point it at a directory of
+`.sfg` files, or add them by path. All member stores must share the same embedding
+model and dimension (enforced at add). See also the `Federation` class in the
+Python API and `seraph_wrapper::Federation` in Rust.
+
+Federated search results are a JSON array of objects:
+
+```json
+[{ "store": "physics", "frame_id": "…", "score": 0.83, "confidence": 0.81,
+   "path_length": 2, "snippet": "…" }]
+```
+
+### `seraph_federation_open_dir`
+
+Open every `.sfg` store in a directory as a federation. Each store is named by its
+file stem (`physics.sfg` → `"physics"`); files whose stem starts with `_` or
+`router` are skipped.
+
+```c
+void* seraph_federation_open_dir(const char* dir);
+```
+
+**Parameters**
+
+| Name | Type | Required | Description |
+|---|---|---|---|
+| `dir` | `const char*` | yes | Directory containing the member `.sfg` files. |
+
+**Returns:** Federation handle, or `NULL` on error.
+
+### `seraph_federation_new`
+
+Create an empty federation. Add stores with `seraph_federation_add_path`.
+
+```c
+void* seraph_federation_new(void);
+```
+
+**Returns:** Federation handle (never `NULL`).
+
+### `seraph_federation_add_path`
+
+Register a store file under `name`. The store must share the federation's
+embedding model and dimension.
+
+```c
+int seraph_federation_add_path(void* handle, const char* name, const char* path);
+```
+
+**Parameters**
+
+| Name | Type | Required | Description |
+|---|---|---|---|
+| `handle` | `void*` | yes | Federation handle. |
+| `name` | `const char*` | yes | Federation-local label for the store. |
+| `path` | `const char*` | yes | Path to the `.sfg` file. |
+
+**Returns:** `0` on success, `-1` on error.
+
+### `seraph_federation_len`
+
+Number of member stores.
+
+```c
+size_t seraph_federation_len(void* handle);
+```
+
+**Returns:** Member count (`0` if the handle is `NULL`).
+
+### `seraph_federation_member_names`
+
+Member store names, in add order.
+
+```c
+char* seraph_federation_member_names(void* handle);
+```
+
+**Returns:** JSON array of strings (free with `seraph_string_free`), or `NULL` on error.
+
+### `seraph_federation_refresh`
+
+Re-pull routing vectors for any member that promoted an eigenframe since the last
+refresh (flagged via the store's `promote` event). Cheap — only changed members.
+
+```c
+int seraph_federation_refresh(void* handle);
+```
+
+**Returns:** `1` if the router changed, `0` if not, `-1` on error.
+
+### `seraph_federation_route`
+
+Route the query to the top `top_stores` members without searching them.
+
+```c
+char* seraph_federation_route(
+    void* handle,
+    const float* embedding,
+    size_t embedding_len,
+    size_t top_stores
+);
+```
+
+**Parameters**
+
+| Name | Type | Required | Description |
+|---|---|---|---|
+| `handle` | `void*` | yes | Federation handle. |
+| `embedding` | `const float*` | yes | Query embedding. |
+| `embedding_len` | `size_t` | yes | Embedding dimension. |
+| `top_stores` | `size_t` | yes | Number of stores to return. |
+
+**Returns:** JSON array of `{store, score}` (free with `seraph_string_free`), or `NULL` on error.
+
+### `seraph_federation_search`
+
+Route and fan out search across the selected stores in parallel, merging results by
+cosine score. `mode` selects the router: `"best"` (single best store), `"top"`
+(top-`n` stores), or `"all"` (every store). Each routed store returns `top_k`; the
+merged result is truncated to `top_k`.
+
+```c
+char* seraph_federation_search(
+    void* handle,
+    const float* embedding,
+    size_t embedding_len,
+    size_t top_k,
+    float tau,
+    const char* mode,
+    size_t n
+);
+```
+
+**Parameters**
+
+| Name | Type | Required | Description |
+|---|---|---|---|
+| `handle` | `void*` | yes | Federation handle. |
+| `embedding` | `const float*` | yes | Query embedding. |
+| `embedding_len` | `size_t` | yes | Embedding dimension. |
+| `top_k` | `size_t` | yes | Number of results to return. |
+| `tau` | `float` | yes | Similarity threshold. |
+| `mode` | `const char*` | yes | `"best"`, `"top"`, or `"all"`. |
+| `n` | `size_t` | yes | Number of stores for `"top"` mode (ignored otherwise). |
+
+**Returns:** JSON array of hits (free with `seraph_string_free`), or `NULL` on error.
+
+### `seraph_federation_free`
+
+Free a federation handle.
+
+```c
+void seraph_federation_free(void* handle);
+```
+
+**Parameters**
+
+| Name | Type | Required | Description |
+|---|---|---|---|
+| `handle` | `void*` | yes | Federation handle to free. |
+
+---
+
 ## Memory Management
 
 Every owned pointer returned across the FFI has a matching free function. Do not

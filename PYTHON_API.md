@@ -580,6 +580,30 @@ store.search_with_warp_spec(query_embedding, spec, top_k=10, tau=0.5, magnitude_
 
 **Raises:** `RuntimeError` on unresolved frame-id/magnitude, dimension mismatch, or a closed store.
 
+### `store.warp_calibration()`
+
+The store's resident warp calibration as a dict (named magnitude → value), or `None` if the store has not been calibrated. Named-magnitude warp resolves against this — there are no built-in presets.
+
+```python
+store.warp_calibration() -> dict | None
+```
+
+**Returns:** `dict[str, float]` mapping each named magnitude to its calibrated value, or `None` if the store is uncalibrated.
+
+**Raises:** `RuntimeError` if the store is closed.
+
+### `store.fixup_warp()`
+
+Sweep the store's own encoder + corpus and, if the result has drifted `> 0.1` from the persisted calibration (or none exists), persist a new calibration sentinel and adopt it. Call from the single writer after open.
+
+```python
+store.fixup_warp() -> bool
+```
+
+**Returns:** `True` if it (re)calibrated, `False` if it skipped (calibration not stale, or geometry not yet developed).
+
+**Raises:** `RuntimeError` if the store is closed.
+
 ### `SearchOpts(top_k=10, tau_similarity=0.5, max_depth=50, include_superseded=False)`
 
 Ergonomic search-options dataclass.

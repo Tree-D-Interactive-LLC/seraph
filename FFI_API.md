@@ -607,6 +607,38 @@ seraph_store_search_text(store, "feline", 10, 0.0f, &hits, &n);
 seraph_hits_free(hits, n);
 ```
 
+### `seraph_store_search_opts`
+
+Search with options. Identical to `seraph_store_search` plus `include_superseded`: when `true`, plainly-superseded (soft-forgotten) frames still resident in the graph are opted back into results. Consolidated sources resolve through their redirect and are not resurfaced. Pass `false` for the default (`seraph_store_search`) behaviour.
+
+```c
+int seraph_store_search_opts(
+    void* handle,
+    const float* embedding,
+    size_t embedding_len,
+    size_t top_k,
+    float tau,
+    bool include_superseded,
+    SeraphHit** out_hits,
+    size_t* out_count
+);
+```
+
+**Parameters**
+
+| Name | Type | Required | Description |
+|---|---|---|---|
+| `handle` | `void*` | yes | Store handle. |
+| `embedding` | `const float*` | yes | Query vector. |
+| `embedding_len` | `size_t` | yes | Query vector length (must match store dim). |
+| `top_k` | `size_t` | yes | Maximum number of hits. |
+| `tau` | `float` | yes | Minimum similarity threshold (`0.0` = none). |
+| `include_superseded` | `bool` | yes | `true` opts soft-forgotten frames back into results; `false` = default `seraph_store_search` behaviour. |
+| `out_hits` | `SeraphHit**` | yes | Out: hit array. Free with `seraph_hits_free`. |
+| `out_count` | `size_t*` | yes | Out: number of hits. |
+
+**Returns:** `0` on success, negative on error.
+
 ### `seraph_store_search_with_warp`
 
 Search with warp-field steering (target pull + suppression).
@@ -708,6 +740,38 @@ SeraphHit* hits = NULL; size_t n = 0;
 seraph_store_search_with_warp_spec(store, q, dim, spec_json, 10, 0.0f, &hits, &n);
 seraph_hits_free(hits, n);
 ```
+
+### `seraph_store_fixup_warp`
+
+Run the warp-calibration fixup: sweep the store's own encoder + corpus and, if the result has drifted from the persisted calibration (or none exists), persist a new calibration sentinel and adopt it. No-op on an undeveloped store. Call from the single writer after open.
+
+```c
+int seraph_store_fixup_warp(void* handle);
+```
+
+**Parameters**
+
+| Name | Type | Required | Description |
+|---|---|---|---|
+| `handle` | `void*` | yes | Store handle. |
+
+**Returns:** `1` if it (re)calibrated, `0` if it skipped (not stale / geometry not developed), `-1` on error.
+
+### `seraph_store_warp_calibration`
+
+Return the store's resident warp calibration as a JSON object (`{"routing": f32, "saturation": f32, ...}`), or the literal `null` if the store has not been calibrated. Named-magnitude warp resolves against this.
+
+```c
+char* seraph_store_warp_calibration(void* handle);
+```
+
+**Parameters**
+
+| Name | Type | Required | Description |
+|---|---|---|---|
+| `handle` | `void*` | yes | Store handle. |
+
+**Returns:** A newly-allocated JSON string (caller frees with `seraph_string_free`), or `null` on a null handle.
 
 ---
 

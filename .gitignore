@@ -3,6 +3,10 @@ release.sh
 CLAUDE.md
 .venv-test/
 
+# Rust build output (the seraph-wrapper crate source IS tracked; its target/ is not)
+target/
+seraph-wrapper/Cargo.lock
+
 # Binary artifacts — published via GitHub Releases, not tracked in git
 *.dll
 *.so

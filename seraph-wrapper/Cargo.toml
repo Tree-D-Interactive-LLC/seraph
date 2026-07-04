@@ -1,0 +1,15 @@
+[package]
+name = "seraph"
+version = "0.2.5"
+edition = "2021"
+description = "SERAPH — Deterministic Semantic Geometry. Idiomatic Rust wrapper over the compiled SERAPH engine."
+license = "LicenseRef-SERAPH"
+authors = ["Daniel S. Brooks"]
+
+[dependencies]
+# Minimal dependencies — this crate is pure FFI glue over the SERAPH cdylib.
+# The cdylib (seraph.dll / libseraph.so) must be present at link time.
+serde_json = "1"  # JSON deserialization for array/config accessors
+
+[build-dependencies]
+# None — the build script just tells cargo where to find the cdylib.

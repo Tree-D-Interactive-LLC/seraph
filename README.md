@@ -4,10 +4,23 @@
 
 SERAPH is a storage and retrieval engine that organizes content through emergent geometric structure rather than explicit schemas. It provides cryptographic provenance, semantic search, and chain-of-custody guarantees from genesis to tip.
 
-**New in 0.2.0**
+**New in 0.2.5**
 
-- **TurboQuant storage** — 4-bit codes are the canonical embedding, so stores are **~4× smaller** (up to ~8× on short content) with **sub-millisecond search** at scale.
+- **Federation** — a read-side coordinator routes a query across many independent single-file stores and merges the results, so a knowledge base can be partitioned by domain without a central index. Opt-in and first-class.
+- **Batched bulk ingest** — the snapshot-based `put_batch` path selects parents and similarity neighbors with a single GPU matmul per batch, making large builds and re-ingests roughly an order of magnitude faster than the per-frame path.
+- **Full C FFI parity** — the C ABI now exposes the complete engine surface (112 functions), so C/C++/Rust callers reach everything the Python bindings do. See [FFI_API.md](FFI_API.md).
+
+**Foundational (since 0.2.0)**
+
+- **TurboQuant storage** — 4-bit codes are the canonical embedding, so stores are **~4× smaller** (up to ~8× on short content) with **sub-millisecond search** at scale (with the SIMD embedding arena enabled — see note below).
 - **Bring-your-own encoder, zero setup** — any embedding model works out of the box with **no calibration** and nothing per-encoder to configure or persist. The quantizer is universal, so stores are self-describing and portable across machines.
+
+> **On the sub-millisecond figure.** Search enables a contiguous, pre-normalized
+> **SIMD embedding arena** (runtime-dispatched AVX2/FMA per-visit scoring) via the
+> `search_arena_on` option. With it on, a 900k-frame store answers text queries in
+> **~0.7–0.9 ms** at the operating threshold; the default (arena off) path is a few
+> milliseconds. Top-k results are identical either way — the arena only changes how
+> the per-visit score is computed, not what is retrieved.
 
 ---
 
@@ -243,7 +256,7 @@ The boundary between Commercial and Enterprise is the **location and control of 
 | Frame ingestion (`put`) | ✓ | ✓ | ✓ |
 | Semantic search (two-phase eigenframe + traversal) | ✓ | ✓ | ✓ |
 | TurboQuant compact storage (4-bit codes, ~4× smaller) | ✓ | ✓ | ✓ |
-| Sub-millisecond search at scale | ✓ | ✓ | ✓ |
+| Sub-millisecond search at scale (SIMD arena) | ✓ | ✓ | ✓ |
 | Batch operations | ✓ | ✓ | ✓ |
 | **Graph & Topology** | | | |
 | Eigenframe promotion | ✓ | ✓ | ✓ |
@@ -251,6 +264,7 @@ The boundary between Commercial and Enterprise is the **location and control of 
 | Traversal & path chains | ✓ | ✓ | ✓ |
 | Neighborhood queries | ✓ | ✓ | ✓ |
 | Typed structural edges | ✓ | ✓ | ✓ |
+| Federation (route & merge across stores) | ✓ | ✓ | ✓ |
 | **Intelligence** | | | |
 | Contradiction detection | ✓ | ✓ | ✓ |
 | Consolidation (geometric / semantic) | ✓ | ✓ | ✓ |

@@ -304,6 +304,145 @@ int seraph_store_set_search_visit_cap_multiplier(void* handle, uint32_t multipli
 seraph_store_set_search_visit_cap_multiplier(store, 10);  // wider frontier
 ```
 
+### `seraph_store_set_search_entry_k`
+
+Fix the Phase-1 entry rank floor. `0` restores the default. Runtime knob.
+
+```c
+int seraph_store_set_search_entry_k(void* handle, size_t k);
+```
+
+**Parameters:** `handle` (`void*`, yes), `k` (`size_t`, yes — entry rank floor; `0` = default).
+**Returns:** `0` on success, `-1` on error.
+
+### `seraph_store_set_search_entry_gap`
+
+Relative-gap Phase-1 entry breadth: every eigenframe within `gap` of the top
+centered score enters Phase-2. `0` falls back to the entry_k floor alone.
+
+```c
+int seraph_store_set_search_entry_gap(void* handle, float gap);
+```
+
+**Parameters:** `handle` (`void*`, yes), `gap` (`float`, yes — relative score gap; `0` disables).
+**Returns:** `0` on success, `-1` on error.
+
+### `seraph_store_set_search_use_stream`
+
+EXPERIMENTAL: route the trace-free read path (`search` / warped search) through
+the gradient-beam stream instead of the BFS flood.
+
+```c
+int seraph_store_set_search_use_stream(void* handle, bool on, size_t beam);
+```
+
+**Parameters:** `handle` (`void*`, yes), `on` (`bool`, yes), `beam` (`size_t`, yes — beam width; `0` = unbounded).
+**Returns:** `0` on success, `-1` on error.
+
+### `seraph_store_set_search_stream_threshold`
+
+Threshold-gate: `search` auto-streams at/above `n` frames. `0` disables the gate.
+
+```c
+int seraph_store_set_search_stream_threshold(void* handle, size_t n);
+```
+
+**Parameters:** `handle` (`void*`, yes), `n` (`size_t`, yes — frame-count gate; `0` disables).
+**Returns:** `0` on success, `-1` on error.
+
+### `seraph_store_set_search_max_visits`
+
+Absolute Phase-2 visit budget, decoupled from `top_k`. `0` falls back to
+`top_k × multiplier`.
+
+```c
+int seraph_store_set_search_max_visits(void* handle, size_t v);
+```
+
+**Parameters:** `handle` (`void*`, yes), `v` (`size_t`, yes — absolute visit budget; `0` = multiplier fallback).
+**Returns:** `0` on success, `-1` on error.
+
+### `seraph_store_set_search_ceiling_margin`
+
+Stream ceiling slack margin. Values below `1.0` keep the beam exploring past the
+k-th-best score.
+
+```c
+int seraph_store_set_search_ceiling_margin(void* handle, float m);
+```
+
+**Parameters:** `handle` (`void*`, yes), `m` (`float`, yes — slack margin, default `1.0`).
+**Returns:** `0` on success, `-1` on error.
+
+### `seraph_store_set_search_arena`
+
+Toggle the Phase-2 contiguous pre-normalized embedding arena (cache-friendly
+per-visit cosine). Results are unchanged either way.
+
+```c
+int seraph_store_set_search_arena(void* handle, bool on);
+```
+
+**Parameters:** `handle` (`void*`, yes), `on` (`bool`, yes).
+**Returns:** `0` on success, `-1` on error.
+
+### `seraph_store_set_search_adjacency`
+
+When on, the Phase-2 flood reads the pre-resolved, active-content-filtered
+search adjacency (no per-visit redirect resolution). Results are unchanged
+either way.
+
+```c
+int seraph_store_set_search_adjacency(void* handle, bool on);
+```
+
+**Parameters:** `handle` (`void*`, yes), `on` (`bool`, yes).
+**Returns:** `0` on success, `-1` on error.
+
+### `seraph_store_set_walk_profile`
+
+DIAGNOSTIC: gate Phase-2 walk profiling (thread-local, zero-overhead off).
+
+```c
+int seraph_store_set_walk_profile(void* handle, bool on);
+```
+
+**Parameters:** `handle` (`void*`, yes), `on` (`bool`, yes).
+**Returns:** `0` on success, `-1` on error.
+
+### `seraph_store_take_walk_profile`
+
+DIAGNOSTIC: read **and reset** the walk-profile accumulators.
+
+```c
+char* seraph_store_take_walk_profile(void* handle);
+```
+
+**Parameters:** `handle` (`void*`, yes).
+**Returns:** JSON `{"resolve_ns", "visited_ns", "score_ns", "push_ns", "visit_count"}` (free with `seraph_string_free`), or `NULL` on error.
+
+### `seraph_store_entry_count`
+
+DIAGNOSTIC: number of Phase-1 entry points selected for a query.
+
+```c
+int64_t seraph_store_entry_count(void* handle, const float* query_embedding, size_t query_len);
+```
+
+**Parameters:** `handle` (`void*`, yes), `query_embedding` (`const float*`, yes), `query_len` (`size_t`, yes).
+**Returns:** Entry count (`>= 0`), or `-1` on error.
+
+### `seraph_store_last_search_visits`
+
+DIAGNOSTIC: nodes visited by the last streamed search (ops cost).
+
+```c
+int64_t seraph_store_last_search_visits(void* handle);
+```
+
+**Parameters:** `handle` (`void*`, yes).
+**Returns:** Visit count (`>= 0`), or `-1` on error.
+
 ### `seraph_reencode_store`
 
 Re-encode a source store into a fresh **v3** destination store (`format_version = 3`). Streams active-content frames from `src_path`, re-encodes them with `model_id` on a dedicated encoder thread, and bulk-ingests the resulting f32 embeddings via the batched snapshot path. The `.gidx` is not written (frame log only); similarity edges reconstruct from the log on the first open.
@@ -638,6 +777,44 @@ int seraph_store_search_opts(
 | `out_count` | `size_t*` | yes | Out: number of hits. |
 
 **Returns:** `0` on success, negative on error.
+
+### `seraph_store_search_temporal`
+
+Search with a temporal view. Relevance selection is identical to `seraph_store_search_opts` — entry points, traversal, tau, and top_k stay relevance-based. `after_us`/`before_us` form an inclusive visibility window on the frame timestamp (microseconds since epoch, `0` = unbounded on that side): out-of-window frames are still traversed as routing nodes but cannot occupy result slots, so `top_k` fills with in-window frames. `order` reorders the already-selected top_k set as pure presentation (stable sort by timestamp; scores and confidences untouched). `order = 0` with both bounds `0` matches `seraph_store_search_opts` exactly.
+
+```c
+int seraph_store_search_temporal(
+    void* handle,
+    const float* embedding,
+    size_t embedding_len,
+    size_t top_k,
+    float tau,
+    int include_superseded,
+    int order,
+    uint64_t after_us,
+    uint64_t before_us,
+    SeraphHit** out_hits,
+    size_t* out_count
+);
+```
+
+**Parameters**
+
+| Name | Type | Required | Description |
+|---|---|---|---|
+| `handle` | `void*` | yes | Store handle. |
+| `embedding` | `const float*` | yes | Query vector. |
+| `embedding_len` | `size_t` | yes | Query vector length (must match store dim). |
+| `top_k` | `size_t` | yes | Maximum number of hits. |
+| `tau` | `float` | yes | Minimum similarity threshold (`0.0` = none). |
+| `include_superseded` | `int` | yes | Non-zero opts soft-forgotten frames back into results (as `seraph_store_search_opts`). |
+| `order` | `int` | yes | Presentation order: `0` = relevance (score-ranked), `1` = most_recent (timestamp descending), `2` = oldest (timestamp ascending). |
+| `after_us` | `uint64_t` | yes | Inclusive lower bound on frame timestamp (µs since epoch); `0` = unbounded. |
+| `before_us` | `uint64_t` | yes | Inclusive upper bound on frame timestamp (µs since epoch); `0` = unbounded. |
+| `out_hits` | `SeraphHit**` | yes | Out: hit array. Free with `seraph_hits_free`. |
+| `out_count` | `size_t*` | yes | Out: number of hits. |
+
+**Returns:** `0` on success, negative on error (including an invalid `order`).
 
 ### `seraph_store_search_with_warp`
 
@@ -1483,6 +1660,40 @@ char* json = seraph_store_neighborhood(store, fid, 0.5f, 2);
 seraph_string_free(json);
 ```
 
+### `seraph_store_neighborhood_spec`
+
+Same as [`seraph_store_neighborhood`](#seraph_store_neighborhood), but tau is
+given as a spec instead of a raw float. `tau_mode` / `tau_value` follow the
+enum documented on
+[`seraph_store_resolve_tau_spec`](#seraph_store_resolve_tau_spec):
+`0` = auto (background p95), `1` = loose (p75), `2` = strict (p99),
+`3` = explicit `tau_value`.
+
+```c
+char* seraph_store_neighborhood_spec(void* handle, const char* frame_id, int tau_mode, float tau_value, size_t hops);
+```
+
+**Parameters**
+
+| Name | Type | Required | Description |
+|---|---|---|---|
+| `handle` | `void*` | yes | Store handle. |
+| `frame_id` | `const char*` | yes | Center frame ID. |
+| `tau_mode` | `int` | yes | Tau spec mode: `0` auto, `1` loose, `2` strict, `3` explicit. |
+| `tau_value` | `float` | yes | Explicit tau for mode `3`; ignored otherwise. |
+| `hops` | `size_t` | yes | Traversal radius in hops. |
+
+**Returns:** Same JSON shape as `seraph_store_neighborhood` (free with `seraph_string_free`), or `NULL` on error.
+
+**Errors:** `NULL` on a `NULL` handle/frame_id or an invalid `tau_mode`.
+
+**Example**
+
+```c
+char* json = seraph_store_neighborhood_spec(store, fid, 2 /* strict */, 0.0f, 2);
+seraph_string_free(json);
+```
+
 ---
 
 ## Warp (Steering)
@@ -1691,6 +1902,25 @@ float seraph_store_resolve_tau(void* handle);
 **Parameters:** `handle` (`void*`, yes).
 **Returns:** Auto-resolved `tau` value for the store. **Errors:** sentinel on `NULL` handle.
 
+### `seraph_store_resolve_tau_spec`
+
+Resolve tau from an explicit spec against the background-similarity
+distribution. The `mode` enum is shared by every `*_spec` function:
+
+| `mode` | Meaning |
+|---|---|
+| `0` | Auto — background p95 (same as `seraph_store_resolve_tau`). |
+| `1` | Loose — background p75. |
+| `2` | Strict — background p99. |
+| `3` | Explicit — `value` is returned unchanged. |
+
+```c
+float seraph_store_resolve_tau_spec(void* handle, int mode, float value);
+```
+
+**Parameters:** `handle` (`void*`, yes), `mode` (`int`, yes — see table), `value` (`float`, yes — used only for mode `3`).
+**Returns:** Resolved tau, or the `0.5` sentinel on error (check `seraph_last_error()`). **Errors:** `NULL` handle or an out-of-range `mode`.
+
 ---
 
 ## Intelligence
@@ -1715,6 +1945,20 @@ char* seraph_store_contradictions(void* handle, float min_divergence);
 
 **Parameters:** `handle` (`void*`, yes), `min_divergence` (`float`, yes — minimum semantic divergence to flag).
 **Returns:** JSON contradiction list. **Response:** [PLACEHOLDER: contradictions JSON shape]
+
+### `seraph_store_contradictions_v2`
+
+Three-population contradiction scan: `geometric` (high cosine, divergent
+content), `lineage` (same-subtree siblings that drifted apart), and `consensus`
+(both signals). `tau_mode` / `tau_value` follow the enum documented on
+[`seraph_store_resolve_tau_spec`](#seraph_store_resolve_tau_spec).
+
+```c
+char* seraph_store_contradictions_v2(void* handle, int tau_mode, float tau_value);
+```
+
+**Parameters:** `handle` (`void*`, yes), `tau_mode` (`int`, yes — `0` auto, `1` loose, `2` strict, `3` explicit), `tau_value` (`float`, yes — used only for mode `3`).
+**Returns:** JSON `{"geometric": [...], "lineage": [...], "consensus": [...]}`; each pair is `{"frame_a_id", "frame_b_id", "cosine", "shared_parent", "content_divergence"}`. **Errors:** `NULL` on a `NULL` handle or invalid `tau_mode`.
 
 ### `seraph_store_evolution`
 
@@ -1765,6 +2009,37 @@ char* seraph_store_consolidate(void* handle, const char* frame_ids_json);
 
 ```c
 char* report = seraph_store_consolidate(store, "[\"id1\",\"id2\"]");
+seraph_string_free(report);
+```
+
+### `seraph_store_consolidate_with_strategy`
+
+Consolidate a list of frames under an explicit merge strategy. Same report as
+[`seraph_store_consolidate`](#seraph_store_consolidate), but frame IDs are
+passed as a C string array rather than JSON.
+
+```c
+char* seraph_store_consolidate_with_strategy(void* handle, const char** frame_ids, size_t count, int strategy);
+```
+
+**Parameters**
+
+| Name | Type | Required | Description |
+|---|---|---|---|
+| `handle` | `void*` | yes | Store handle. |
+| `frame_ids` | `const char**` | yes | Array of frame ID strings to consolidate. |
+| `count` | `size_t` | yes | Number of entries in `frame_ids`. |
+| `strategy` | `int` | yes | `0` = geometric (most-central source frame's content — the `seraph_store_consolidate` behavior); `1` = semantic (LLM synthesis — not implemented in the Rust runtime; always errors). |
+
+**Returns:** JSON consolidation report (free with `seraph_string_free`), or `NULL` on error.
+
+**Errors:** `NULL` on a `NULL` handle, a null/invalid frame ID entry, an out-of-range `strategy`, or `strategy = 1`.
+
+**Example**
+
+```c
+const char* ids[] = { "id1", "id2" };
+char* report = seraph_store_consolidate_with_strategy(store, ids, 2, 0);
 seraph_string_free(report);
 ```
 

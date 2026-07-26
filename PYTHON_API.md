@@ -459,7 +459,7 @@ for hit in store.search(q, top_k=5, tau=0.4):
 
 ### `store.search_with_opts(query_embedding, opts)`
 
-Search using a `SearchOpts` dataclass. Honors `top_k`, `tau_similarity`, `max_depth`, and `include_superseded`.
+Search using a `SearchOpts` dataclass. Honors `top_k`, `tau_similarity`, `max_depth`, `include_superseded`, and the temporal view fields (`order`, `after_us`, `before_us` — see `SearchOpts`).
 
 ```python
 store.search_with_opts(query_embedding, opts) -> list[Hit]
@@ -604,12 +604,12 @@ store.fixup_warp() -> bool
 
 **Raises:** `RuntimeError` if the store is closed.
 
-### `SearchOpts(top_k=10, tau_similarity=0.5, max_depth=50, include_superseded=False)`
+### `SearchOpts(top_k=10, tau_similarity=0.5, max_depth=50, include_superseded=False, order=None, after_us=None, before_us=None)`
 
-Ergonomic search-options dataclass.
+Ergonomic search-options dataclass. The temporal fields (`order`, `after_us`, `before_us`) route the search through the temporal view: relevance selection is unchanged — the inclusive timestamp window only scopes which frames may occupy result slots (out-of-window frames still route the traversal), and `order` reorders the already-selected top_k set as pure presentation (scores untouched). With all three unset, behaviour is identical to the pre-temporal path.
 
 ```python
-SearchOpts(top_k=10, tau_similarity=0.5, max_depth=50, include_superseded=False) -> SearchOpts
+SearchOpts(top_k=10, tau_similarity=0.5, max_depth=50, include_superseded=False, order=None, after_us=None, before_us=None) -> SearchOpts
 ```
 
 **Parameters**
@@ -619,7 +619,10 @@ SearchOpts(top_k=10, tau_similarity=0.5, max_depth=50, include_superseded=False)
 | `top_k` | `int` | no | `10` | Maximum results. |
 | `tau_similarity` | `float` | no | `0.5` | Similarity threshold. |
 | `max_depth` | `int` | no | `50` | Accepted for parity; not honored (depth comes from `StoreConfig.search_max_depth`). |
-| `include_superseded` | `bool` | no | `False` | Accepted for parity; not honored (`search` never returns superseded frames). |
+| `include_superseded` | `bool` | no | `False` | Opts plainly-superseded (soft-forgotten) frames back into results. |
+| `order` | `str \| None` | no | `None` | Presentation order: `"relevance"` (default), `"most_recent"` (timestamp descending), `"oldest"` (timestamp ascending). Invalid values raise `ValueError`. |
+| `after_us` | `int \| None` | no | `None` | Inclusive lower bound on frame timestamp (µs since epoch); `None` = unbounded. |
+| `before_us` | `int \| None` | no | `None` | Inclusive upper bound on frame timestamp (µs since epoch); `None` = unbounded. |
 
 **Returns:** `SearchOpts`. All fields are readable/writable attributes.
 
@@ -1182,12 +1185,12 @@ store.subtrees(min_size=10) -> list[SubtreeInfo]
 
 ## Neighborhood
 
-### `store.neighborhood(frame_id, tau=None, hops=2)`
+### `store.neighborhood(frame_id, tau=None, hops=1)`
 
 Three-population neighborhood exploration.
 
 ```python
-store.neighborhood(frame_id, tau=None, hops=2) -> NeighborhoodResult
+store.neighborhood(frame_id, tau=None, hops=1) -> NeighborhoodResult
 ```
 
 **Parameters**
@@ -1196,18 +1199,18 @@ store.neighborhood(frame_id, tau=None, hops=2) -> NeighborhoodResult
 |---|---|---|---|---|
 | `frame_id` | `str` | yes | -- | Center frame ID. |
 | `tau` | `float \| str \| None` | no | `None` | `None` (p95), `"loose"` (p75), `"strict"` (p99), or an explicit float. |
-| `hops` | `int` | no | `2` | Traversal radius in hops. |
+| `hops` | `int` | no | `1` | Traversal radius in hops. |
 
 **Returns:** `NeighborhoodResult`.
 
 **Raises:** `RuntimeError` on an invalid `tau` string or a closed store.
 
-### `store.neighborhood_with_warp(frame_id, targets, suppress, profile="bounded", bound_k=1.5, tau=0.5, hops=2)`
+### `store.neighborhood_with_warp(frame_id, targets, suppress, profile="bounded", bound_k=1.5, tau=0.5, hops=1)`
 
 Neighborhood exploration with a warp field applied.
 
 ```python
-store.neighborhood_with_warp(frame_id, targets, suppress, profile="bounded", bound_k=1.5, tau=0.5, hops=2) -> NeighborhoodResult
+store.neighborhood_with_warp(frame_id, targets, suppress, profile="bounded", bound_k=1.5, tau=0.5, hops=1) -> NeighborhoodResult
 ```
 
 **Parameters**
@@ -1220,7 +1223,7 @@ store.neighborhood_with_warp(frame_id, targets, suppress, profile="bounded", bou
 | `profile` | `str` | no | `"bounded"` | `"routing"`, `"saturation"`, or `"bounded"`. |
 | `bound_k` | `float` | no | `1.5` | Suppression-norm cap. |
 | `tau` | `float` | no | `0.5` | Similarity threshold. |
-| `hops` | `int` | no | `2` | Traversal radius. |
+| `hops` | `int` | no | `1` | Traversal radius. |
 
 **Returns:** `NeighborhoodResult`.
 

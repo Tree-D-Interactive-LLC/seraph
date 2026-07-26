@@ -1,6 +1,6 @@
 [package]
 name = "seraph"
-version = "0.2.5"
+version = "0.2.6"
 edition = "2021"
 description = "SERAPH — Deterministic Semantic Geometry. Idiomatic Rust wrapper over the compiled SERAPH engine."
 license = "LicenseRef-SERAPH"

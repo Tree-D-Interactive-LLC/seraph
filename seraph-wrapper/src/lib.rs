@@ -93,6 +93,15 @@ extern "C" {
         include_superseded: bool,
         out_hits: *mut *mut FfiHit, out_count: *mut usize,
     ) -> i32;
+    fn seraph_store_search_temporal(
+        handle: *mut c_void,
+        embedding: *const f32, embedding_len: usize,
+        top_k: usize, tau: f32,
+        include_superseded: i32,
+        order: i32,
+        after_us: u64, before_us: u64,
+        out_hits: *mut *mut FfiHit, out_count: *mut usize,
+    ) -> i32;
 
     // Frame access
     fn seraph_store_get_content(
@@ -149,6 +158,18 @@ extern "C" {
 
     // Tuning
     fn seraph_store_set_search_visit_cap_multiplier(handle: *mut c_void, multiplier: u32) -> i32;
+    fn seraph_store_set_search_entry_k(handle: *mut c_void, k: usize) -> i32;
+    fn seraph_store_set_search_entry_gap(handle: *mut c_void, gap: f32) -> i32;
+    fn seraph_store_set_search_use_stream(handle: *mut c_void, on: bool, beam: usize) -> i32;
+    fn seraph_store_set_search_stream_threshold(handle: *mut c_void, n: usize) -> i32;
+    fn seraph_store_set_search_max_visits(handle: *mut c_void, v: usize) -> i32;
+    fn seraph_store_set_search_ceiling_margin(handle: *mut c_void, m: f32) -> i32;
+    fn seraph_store_set_search_arena(handle: *mut c_void, on: bool) -> i32;
+    fn seraph_store_set_search_adjacency(handle: *mut c_void, on: bool) -> i32;
+    fn seraph_store_set_walk_profile(handle: *mut c_void, on: bool) -> i32;
+    fn seraph_store_take_walk_profile(handle: *mut c_void) -> *mut c_char;
+    fn seraph_store_entry_count(handle: *mut c_void, query_embedding: *const f32, query_len: usize) -> i64;
+    fn seraph_store_last_search_visits(handle: *mut c_void) -> i64;
 
     // Frame access
     fn seraph_store_get_frame(handle: *mut c_void, frame_id: *const c_char) -> *mut c_char;
@@ -188,6 +209,7 @@ extern "C" {
 
     // Neighborhood / Chain
     fn seraph_store_neighborhood(handle: *mut c_void, frame_id: *const c_char, tau: f32, hops: usize) -> *mut c_char;
+    fn seraph_store_neighborhood_spec(handle: *mut c_void, frame_id: *const c_char, tau_mode: i32, tau_value: f32, hops: usize) -> *mut c_char;
     fn seraph_store_chain(handle: *mut c_void, from_id: *const c_char, to_id: *const c_char) -> *mut c_char;
     fn seraph_store_chain_to(handle: *mut c_void, query_embedding: *const f32, query_len: usize) -> *mut c_char;
     fn seraph_store_chain_between(handle: *mut c_void, emb_a: *const f32, len_a: usize, emb_b: *const f32, len_b: usize) -> *mut c_char;
@@ -199,12 +221,15 @@ extern "C" {
     fn seraph_store_region_health(handle: *mut c_void, eigenframe_id: *const c_char) -> *mut c_char;
     fn seraph_store_similarity_stats(handle: *mut c_void) -> *mut c_char;
     fn seraph_store_resolve_tau(handle: *mut c_void) -> f32;
+    fn seraph_store_resolve_tau_spec(handle: *mut c_void, mode: i32, value: f32) -> f32;
     fn seraph_store_drift_report(handle: *mut c_void, window: usize, threshold: f32) -> *mut c_char;
     fn seraph_store_contradictions(handle: *mut c_void, min_divergence: f32) -> *mut c_char;
+    fn seraph_store_contradictions_v2(handle: *mut c_void, tau_mode: i32, tau_value: f32) -> *mut c_char;
     fn seraph_store_evolution(handle: *mut c_void, seed_frame_id: *const c_char) -> *mut c_char;
     fn seraph_store_merge_candidates(handle: *mut c_void, tau: f32) -> *mut c_char;
     fn seraph_store_consolidate(handle: *mut c_void, frame_ids_json: *const c_char) -> *mut c_char;
     fn seraph_store_consolidate_all(handle: *mut c_void) -> *mut c_char;
+    fn seraph_store_consolidate_with_strategy(handle: *mut c_void, frame_ids: *const *const c_char, count: usize, strategy: i32) -> *mut c_char;
 
     // Provenance
     fn seraph_store_writer_audit(handle: *mut c_void) -> *mut c_char;
@@ -396,6 +421,71 @@ struct FfiFrameView {
     _frame_box: *const c_void,
     _id_cstr: *const c_void,
     _parent_cstr: *const c_void,
+}
+
+// ---------------------------------------------------------------- //
+// Public argument enums
+// ---------------------------------------------------------------- //
+
+/// Tau threshold specification, resolved against the store's
+/// background-similarity distribution.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum TauSpec {
+    /// Auto — background p95 (the `resolve_tau` default).
+    Auto,
+    /// Loose — background p75.
+    Loose,
+    /// Strict — background p99.
+    Strict,
+    /// Explicit threshold, passed through unchanged.
+    Value(f32),
+}
+
+impl TauSpec {
+    /// FFI encoding: the (mode, value) pair `seraph_store_resolve_tau_spec`
+    /// expects (0 = auto, 1 = loose, 2 = strict, 3 = explicit value).
+    fn to_mode_value(self) -> (i32, f32) {
+        match self {
+            TauSpec::Auto => (0, 0.0),
+            TauSpec::Loose => (1, 0.0),
+            TauSpec::Strict => (2, 0.0),
+            TauSpec::Value(v) => (3, v),
+        }
+    }
+}
+
+/// Content strategy for a consolidated frame.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MergeStrategy {
+    /// Most-central source frame's content verbatim (geometric only).
+    Geometric,
+    /// LLM-synthesized content — not implemented in the Rust runtime; errors.
+    Semantic,
+}
+
+/// Presentation order for `search_temporal` hits. Applied AFTER relevance
+/// selection — never changes which frames are selected or their scores.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum TemporalOrder {
+    /// Score-ranked (identical to `search` / `search_opts` output order).
+    #[default]
+    Relevance,
+    /// Timestamp descending (newest first).
+    MostRecent,
+    /// Timestamp ascending (oldest first).
+    Oldest,
+}
+
+impl TemporalOrder {
+    /// FFI encoding: the order code `seraph_store_search_temporal` expects
+    /// (0 = relevance, 1 = most_recent, 2 = oldest).
+    fn to_code(self) -> i32 {
+        match self {
+            TemporalOrder::Relevance => 0,
+            TemporalOrder::MostRecent => 1,
+            TemporalOrder::Oldest => 2,
+        }
+    }
 }
 
 // ---------------------------------------------------------------- //
@@ -870,6 +960,49 @@ impl Store {
         Ok(take_hits(hits_ptr, count))
     }
 
+    /// Search with a temporal view. Identical relevance selection to
+    /// [`search_opts`](Self::search_opts), plus:
+    /// - `after_us` / `before_us`: inclusive visibility window on the frame
+    ///   timestamp (microseconds since epoch), `None` = unbounded.
+    ///   Out-of-window frames are still traversed as routing nodes; they are
+    ///   only ineligible for result slots, so `top_k` fills with in-window
+    ///   frames.
+    /// - `order`: presentation order for the selected top_k set — a pure
+    ///   post-selection reorder; scores and confidences are untouched.
+    ///   [`TemporalOrder::Relevance`] with no window matches
+    ///   [`search_opts`](Self::search_opts) exactly.
+    pub fn search_temporal(
+        &self,
+        query_embedding: &[f32],
+        top_k: usize,
+        tau: f32,
+        include_superseded: bool,
+        order: TemporalOrder,
+        after_us: Option<u64>,
+        before_us: Option<u64>,
+    ) -> Result<Vec<Hit>, Error> {
+        let mut hits_ptr: *mut FfiHit = ptr::null_mut();
+        let mut count: usize = 0;
+
+        let rc = unsafe {
+            seraph_store_search_temporal(
+                self.handle,
+                query_embedding.as_ptr(), query_embedding.len(),
+                top_k, tau,
+                include_superseded as i32,
+                order.to_code(),
+                after_us.unwrap_or(0), before_us.unwrap_or(0),
+                &mut hits_ptr, &mut count,
+            )
+        };
+
+        if rc != 0 {
+            return Err(last_error());
+        }
+
+        Ok(take_hits(hits_ptr, count))
+    }
+
     /// Get a frame's content bytes by ID.
     pub fn get_content(&self, frame_id: &str) -> Result<Option<Vec<u8>>, Error> {
         let fid_c = to_cstring(frame_id);
@@ -1118,6 +1251,86 @@ impl Store {
         if rc == 0 { Ok(()) } else { Err(last_error()) }
     }
 
+    /// Fix the Phase-1 entry rank floor (`0` restores the default).
+    pub fn set_search_entry_k(&mut self, k: usize) -> Result<(), Error> {
+        let rc = unsafe { seraph_store_set_search_entry_k(self.handle, k) };
+        if rc == 0 { Ok(()) } else { Err(last_error()) }
+    }
+
+    /// Relative-gap Phase-1 entry breadth (`0` falls back to entry_k).
+    pub fn set_search_entry_gap(&mut self, gap: f32) -> Result<(), Error> {
+        let rc = unsafe { seraph_store_set_search_entry_gap(self.handle, gap) };
+        if rc == 0 { Ok(()) } else { Err(last_error()) }
+    }
+
+    /// EXPERIMENTAL: route the trace-free read path through the gradient-beam
+    /// stream. `beam` of 0 means unbounded.
+    pub fn set_search_use_stream(&mut self, on: bool, beam: usize) -> Result<(), Error> {
+        let rc = unsafe { seraph_store_set_search_use_stream(self.handle, on, beam) };
+        if rc == 0 { Ok(()) } else { Err(last_error()) }
+    }
+
+    /// Threshold-gate: `search` auto-streams at/above `n` frames (`0` disables).
+    pub fn set_search_stream_threshold(&mut self, n: usize) -> Result<(), Error> {
+        let rc = unsafe { seraph_store_set_search_stream_threshold(self.handle, n) };
+        if rc == 0 { Ok(()) } else { Err(last_error()) }
+    }
+
+    /// Absolute Phase-2 visit budget, decoupled from top_k (`0` falls back to
+    /// `top_k * multiplier`).
+    pub fn set_search_max_visits(&mut self, v: usize) -> Result<(), Error> {
+        let rc = unsafe { seraph_store_set_search_max_visits(self.handle, v) };
+        if rc == 0 { Ok(()) } else { Err(last_error()) }
+    }
+
+    /// Stream ceiling slack margin (values below 1.0 keep the beam exploring
+    /// past the k-th-best score).
+    pub fn set_search_ceiling_margin(&mut self, m: f32) -> Result<(), Error> {
+        let rc = unsafe { seraph_store_set_search_ceiling_margin(self.handle, m) };
+        if rc == 0 { Ok(()) } else { Err(last_error()) }
+    }
+
+    /// Toggle the Phase-2 contiguous pre-normalized embedding arena. Results
+    /// are unchanged either way.
+    pub fn set_search_arena(&mut self, on: bool) -> Result<(), Error> {
+        let rc = unsafe { seraph_store_set_search_arena(self.handle, on) };
+        if rc == 0 { Ok(()) } else { Err(last_error()) }
+    }
+
+    /// When on, the Phase-2 flood reads the pre-resolved search adjacency.
+    /// Results are unchanged either way.
+    pub fn set_search_adjacency(&mut self, on: bool) -> Result<(), Error> {
+        let rc = unsafe { seraph_store_set_search_adjacency(self.handle, on) };
+        if rc == 0 { Ok(()) } else { Err(last_error()) }
+    }
+
+    /// DIAGNOSTIC: gate Phase-2 walk profiling (thread-local, zero-overhead off).
+    pub fn set_walk_profile(&self, on: bool) -> Result<(), Error> {
+        let rc = unsafe { seraph_store_set_walk_profile(self.handle, on) };
+        if rc == 0 { Ok(()) } else { Err(last_error()) }
+    }
+
+    /// DIAGNOSTIC: read + reset the walk-profile accumulators. Returns JSON
+    /// `{"resolve_ns", "visited_ns", "score_ns", "push_ns", "visit_count"}`.
+    pub fn take_walk_profile_json(&self) -> Result<String, Error> {
+        let p = unsafe { seraph_store_take_walk_profile(self.handle) };
+        if p.is_null() { Err(last_error()) } else { Ok(unsafe { take_cstring(p) }) }
+    }
+
+    /// DIAGNOSTIC: number of Phase-1 entry points selected for a query.
+    pub fn entry_count(&self, query_embedding: &[f32]) -> Result<usize, Error> {
+        let n = unsafe {
+            seraph_store_entry_count(self.handle, query_embedding.as_ptr(), query_embedding.len())
+        };
+        if n < 0 { Err(last_error()) } else { Ok(n as usize) }
+    }
+
+    /// DIAGNOSTIC: nodes visited by the last streamed search (ops cost).
+    pub fn last_search_visits(&self) -> Result<usize, Error> {
+        let n = unsafe { seraph_store_last_search_visits(self.handle) };
+        if n < 0 { Err(last_error()) } else { Ok(n as usize) }
+    }
+
     // ---------------------------------------------------------------- //
     // Frame access
     // ---------------------------------------------------------------- //
@@ -1272,6 +1485,22 @@ impl Store {
         Ok(unsafe { take_cstring(p) })
     }
 
+    /// Three-population neighborhood with tau given as a [`TauSpec`]. Returns JSON.
+    pub fn neighborhood_spec_json(
+        &self,
+        frame_id: &str,
+        tau: TauSpec,
+        hops: usize,
+    ) -> Result<String, Error> {
+        let fid_c = to_cstring(frame_id);
+        let (mode, value) = tau.to_mode_value();
+        let p = unsafe {
+            seraph_store_neighborhood_spec(self.handle, fid_c.as_ptr(), mode, value, hops)
+        };
+        if p.is_null() { return Err(last_error()); }
+        Ok(unsafe { take_cstring(p) })
+    }
+
     /// Chain between two frames. Returns JSON.
     pub fn chain_json(&self, from_id: &str, to_id: &str) -> Result<String, Error> {
         let from_c = to_cstring(from_id);
@@ -1349,6 +1578,13 @@ impl Store {
         unsafe { seraph_store_resolve_tau(self.handle) }
     }
 
+    /// Resolve tau from a [`TauSpec`] (auto p95 / loose p75 / strict p99 /
+    /// explicit passthrough).
+    pub fn resolve_tau_spec(&self, tau: TauSpec) -> f32 {
+        let (mode, value) = tau.to_mode_value();
+        unsafe { seraph_store_resolve_tau_spec(self.handle, mode, value) }
+    }
+
     /// Drift report. Returns JSON.
     pub fn drift_report_json(&self, window: usize, threshold: f32) -> Option<String> {
         let p = unsafe { seraph_store_drift_report(self.handle, window, threshold) };
@@ -1359,6 +1595,14 @@ impl Store {
     pub fn contradictions_json(&self, min_divergence: f32) -> Option<String> {
         let p = unsafe { seraph_store_contradictions(self.handle, min_divergence) };
         if p.is_null() { None } else { Some(unsafe { take_cstring(p) }) }
+    }
+
+    /// Three-population contradiction scan (v2) at a [`TauSpec`] threshold.
+    /// Returns JSON `{"geometric": [...], "lineage": [...], "consensus": [...]}`.
+    pub fn contradictions_v2_json(&self, tau: TauSpec) -> Result<String, Error> {
+        let (mode, value) = tau.to_mode_value();
+        let p = unsafe { seraph_store_contradictions_v2(self.handle, mode, value) };
+        if p.is_null() { Err(last_error()) } else { Ok(unsafe { take_cstring(p) }) }
     }
 
     /// Evolution from a seed frame. Returns JSON.
@@ -1384,6 +1628,27 @@ impl Store {
     /// Consolidate all duplicate clusters. Returns JSON report.
     pub fn consolidate_all_json(&mut self) -> Result<String, Error> {
         let p = unsafe { seraph_store_consolidate_all(self.handle) };
+        if p.is_null() { Err(last_error()) } else { Ok(unsafe { take_cstring(p) }) }
+    }
+
+    /// Consolidate specific frames under an explicit [`MergeStrategy`].
+    /// Returns the same JSON report as [`consolidate_json`](Store::consolidate_json).
+    pub fn consolidate_with_strategy_json(
+        &mut self,
+        frame_ids: &[&str],
+        strategy: MergeStrategy,
+    ) -> Result<String, Error> {
+        let ids_c: Vec<CString> = frame_ids.iter().map(|s| to_cstring(s)).collect();
+        let id_ptrs: Vec<*const c_char> = ids_c.iter().map(|c| c.as_ptr()).collect();
+        let strat = match strategy {
+            MergeStrategy::Geometric => 0,
+            MergeStrategy::Semantic => 1,
+        };
+        let p = unsafe {
+            seraph_store_consolidate_with_strategy(
+                self.handle, id_ptrs.as_ptr(), id_ptrs.len(), strat,
+            )
+        };
         if p.is_null() { Err(last_error()) } else { Ok(unsafe { take_cstring(p) }) }
     }
 

@@ -4,11 +4,23 @@
 
 SERAPH is a storage and retrieval engine that organizes content through emergent geometric structure rather than explicit schemas. It provides cryptographic provenance, semantic search, and chain-of-custody guarantees from genesis to tip.
 
-**New in 0.2.5**
+**New in 0.2.6**
+
+- **Temporal views** — order results by recency or scope them to a time window, without changing what the geometry retrieves. The window gates result eligibility during traversal, so `top_k` fills with in-window frames rather than being starved by a post-filter.
+- **Hardened write and recovery paths** — the frame log repairs a torn tail on open (a crash mid-append could previously strand frames written afterwards), seal and embedding-dimension enforcement moved to the single commit choke point, and invalid writes now fail loudly instead of being silently accepted.
+- **Real time-anchor verification** — OpenTimestamps proofs are checked against the Bitcoin merkle root, and RFC 3161 tokens have their CMS signature verified. Both previously reported `confirmed` on structural validity alone. Chain-of-trust policy stays with the calling application, which receives the signer certificate.
+- **Safer C ABI** — every export runs behind a panic barrier and null-guards its raw slice parameters; the Python bindings release the GIL around ingest, search, and encode.
+
+> **Upgrading from 0.2.5?** Auto-resolved `tau` (`None`, `"loose"`, `"strict"`)
+> now calibrates against the background similarity distribution and resolves
+> lower than before; `neighborhood`'s `hops` default drops from 2 to 1. See
+> the 0.2.6 release notes for the full list of behaviour changes.
+
+**Since 0.2.5**
 
 - **Federation** — a read-side coordinator routes a query across many independent single-file stores and merges the results, so a knowledge base can be partitioned by domain without a central index. Opt-in and first-class.
 - **Batched bulk ingest** — the snapshot-based `put_batch` path selects parents and similarity neighbors with a single GPU matmul per batch, making large builds and re-ingests roughly an order of magnitude faster than the per-frame path.
-- **Full C FFI parity** — the C ABI now exposes the complete engine surface (112 functions), so C/C++/Rust callers reach everything the Python bindings do. See [FFI_API.md](FFI_API.md).
+- **Full C FFI parity** — the C ABI exposes the complete engine surface (129 functions), so C/C++/Rust callers reach everything the Python bindings do. See [FFI_API.md](FFI_API.md).
 
 **Foundational (since 0.2.0)**
 

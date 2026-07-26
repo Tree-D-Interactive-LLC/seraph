@@ -284,6 +284,43 @@ pub fn search_opts(
 ) -> Result<Vec<Hit>, Error>
 ```
 
+### `Store::search_temporal`
+
+Search with a temporal view. Relevance selection is identical to
+[`search_opts`](#storesearch_opts) — entry points, traversal, tau, and top_k
+stay relevance-based. `after_us`/`before_us` form an inclusive visibility
+window on the frame timestamp (microseconds since epoch, `None` = unbounded):
+out-of-window frames are still traversed as routing nodes but cannot occupy
+result slots, so `top_k` fills with in-window frames. `order` reorders the
+already-selected top_k set as pure presentation (stable sort by timestamp;
+scores and confidences untouched). `TemporalOrder::Relevance` with no window
+matches `search_opts` exactly.
+
+```rust
+pub fn search_temporal(
+    &self,
+    query_embedding: &[f32],
+    top_k: usize,
+    tau: f32,
+    include_superseded: bool,
+    order: TemporalOrder,
+    after_us: Option<u64>,
+    before_us: Option<u64>,
+) -> Result<Vec<Hit>, Error>
+```
+
+**Parameters**
+
+| Name | Type | Description |
+|---|---|---|
+| `query_embedding` | `&[f32]` | Query vector of length `store.dim()`. |
+| `top_k` | `usize` | Maximum number of hits to return. |
+| `tau` | `f32` | Similarity floor for Phase-2 (`0.0` disables). |
+| `include_superseded` | `bool` | Opt soft-forgotten frames back into results (as `search_opts`). |
+| `order` | `TemporalOrder` | `Relevance` (score-ranked, default), `MostRecent` (timestamp descending), `Oldest` (timestamp ascending). |
+| `after_us` | `Option<u64>` | Inclusive lower bound on frame timestamp (µs since epoch); `None` = unbounded. |
+| `before_us` | `Option<u64>` | Inclusive upper bound on frame timestamp (µs since epoch); `None` = unbounded. |
+
 ### `Store::search_text`
 
 Encode `query` with the store's model and search in one call.
@@ -298,6 +335,106 @@ Set the Phase-2 BFS visit-cap multiplier (completeness ↔ speed).
 
 ```rust
 pub fn set_search_visit_cap_multiplier(&mut self, multiplier: u32) -> Result<(), Error>
+```
+
+### `Store::set_search_entry_k`
+
+Fix the Phase-1 entry rank floor (`0` restores the default).
+
+```rust
+pub fn set_search_entry_k(&mut self, k: usize) -> Result<(), Error>
+```
+
+### `Store::set_search_entry_gap`
+
+Relative-gap Phase-1 entry breadth (`0` falls back to the entry_k floor).
+
+```rust
+pub fn set_search_entry_gap(&mut self, gap: f32) -> Result<(), Error>
+```
+
+### `Store::set_search_use_stream`
+
+EXPERIMENTAL: route the read path through the gradient-beam stream
+(`beam` of `0` = unbounded).
+
+```rust
+pub fn set_search_use_stream(&mut self, on: bool, beam: usize) -> Result<(), Error>
+```
+
+### `Store::set_search_stream_threshold`
+
+Threshold-gate: `search` auto-streams at/above `n` frames (`0` disables).
+
+```rust
+pub fn set_search_stream_threshold(&mut self, n: usize) -> Result<(), Error>
+```
+
+### `Store::set_search_max_visits`
+
+Absolute Phase-2 visit budget, decoupled from `top_k` (`0` = multiplier fallback).
+
+```rust
+pub fn set_search_max_visits(&mut self, v: usize) -> Result<(), Error>
+```
+
+### `Store::set_search_ceiling_margin`
+
+Stream ceiling slack margin (below `1.0` keeps the beam exploring past the
+k-th-best score).
+
+```rust
+pub fn set_search_ceiling_margin(&mut self, m: f32) -> Result<(), Error>
+```
+
+### `Store::set_search_arena`
+
+Toggle the Phase-2 contiguous pre-normalized embedding arena. Results unchanged.
+
+```rust
+pub fn set_search_arena(&mut self, on: bool) -> Result<(), Error>
+```
+
+### `Store::set_search_adjacency`
+
+When on, the Phase-2 flood reads the pre-resolved search adjacency. Results
+unchanged.
+
+```rust
+pub fn set_search_adjacency(&mut self, on: bool) -> Result<(), Error>
+```
+
+### `Store::set_walk_profile`
+
+DIAGNOSTIC: gate Phase-2 walk profiling (thread-local, zero-overhead off).
+
+```rust
+pub fn set_walk_profile(&self, on: bool) -> Result<(), Error>
+```
+
+### `Store::take_walk_profile_json`
+
+DIAGNOSTIC: read + reset the walk-profile accumulators. Returns JSON
+`{"resolve_ns", "visited_ns", "score_ns", "push_ns", "visit_count"}`.
+
+```rust
+pub fn take_walk_profile_json(&self) -> Result<String, Error>
+```
+
+### `Store::entry_count`
+
+DIAGNOSTIC: number of Phase-1 entry points selected for a query.
+
+```rust
+pub fn entry_count(&self, query_embedding: &[f32]) -> Result<usize, Error>
+```
+
+### `Store::last_search_visits`
+
+DIAGNOSTIC: nodes visited by the last streamed search (ops cost).
+
+```rust
+pub fn last_search_visits(&self) -> Result<usize, Error>
 ```
 
 ---
@@ -528,6 +665,15 @@ as JSON.
 pub fn neighborhood_json(&self, frame_id: &str, tau: f32, hops: usize) -> Result<String, Error>
 ```
 
+### `Store::neighborhood_spec_json`
+
+Same as [`neighborhood_json`](#storeneighborhood_json), with tau given as a
+`TauSpec` (`Auto` p95 / `Loose` p75 / `Strict` p99 / `Value(f32)`).
+
+```rust
+pub fn neighborhood_spec_json(&self, frame_id: &str, tau: TauSpec, hops: usize) -> Result<String, Error>
+```
+
 ---
 
 ## Warp (Steering)
@@ -687,6 +833,15 @@ The store's auto-resolved tau (its p95 parent-child similarity).
 pub fn resolve_tau(&self) -> f32
 ```
 
+### `Store::resolve_tau_spec`
+
+Resolve tau from a `TauSpec`: `Auto` (background p95), `Loose` (p75), `Strict`
+(p99), or `Value(f32)` (passthrough).
+
+```rust
+pub fn resolve_tau_spec(&self, tau: TauSpec) -> f32
+```
+
 ---
 
 ## Intelligence
@@ -705,6 +860,15 @@ Detected contradictions above a divergence threshold, as JSON.
 
 ```rust
 pub fn contradictions_json(&self, min_divergence: f32) -> Option<String>
+```
+
+### `Store::contradictions_v2_json`
+
+Three-population contradiction scan (geometric / lineage / consensus) at a
+`TauSpec` threshold, as JSON.
+
+```rust
+pub fn contradictions_v2_json(&self, tau: TauSpec) -> Result<String, Error>
 ```
 
 ### `Store::evolution_json`
@@ -750,6 +914,17 @@ Run consolidation across all eligible merge candidates. Returns JSON.
 
 ```rust
 pub fn consolidate_all_json(&mut self) -> Result<String, Error>
+```
+
+### `Store::consolidate_with_strategy_json`
+
+Consolidate specific frames under an explicit `MergeStrategy` (`Geometric` —
+most-central source content; `Semantic` — LLM synthesis, not implemented in the
+Rust runtime, always errors). Returns the same JSON report as
+[`consolidate_json`](#storeconsolidate_json).
+
+```rust
+pub fn consolidate_with_strategy_json(&mut self, frame_ids: &[&str], strategy: MergeStrategy) -> Result<String, Error>
 ```
 
 ---

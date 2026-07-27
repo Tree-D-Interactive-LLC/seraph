@@ -11,7 +11,9 @@ See `RUST_API.md` for the full API reference.
 
 - `src/lib.rs` — the safe wrapper (the only source you consume).
 - `build.rs` — points the linker at the engine cdylib via `SERAPH_LIB_DIR`.
-- `RUST_API.md` — generated API reference.
+- `Cargo.toml` — one dependency (`serde_json`); the engine is linked, not built.
+- `RUST_API.md` — the API reference.
+- `LICENSE.md` — the terms this crate and the engine ship under.
 
 ## Using it
 

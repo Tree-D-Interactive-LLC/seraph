@@ -1,12 +1,13 @@
 # SERAPH Rust API Reference
 
-> Crate: `seraph` (the `seraph-wrapper` crate)
+> Crate: `seraph`
 > Add via path/vendor: `seraph = { path = "vendor/seraph" }`
 
 This reference documents the idiomatic Rust API for the people who **call**
-SERAPH from Rust. It is the third public surface, alongside the
-[C FFI](FFI_API.md) and the [Python bindings](PYTHON_API.md); it wraps the same
-compiled engine as safe `Store` / `Encoder` / `Federation` types. Read
+SERAPH from Rust. It is one of three call surfaces over the same compiled
+engine — the others are the C ABI and the Python bindings, documented in
+`FFI_API.md` and `PYTHON_API.md` alongside this file in the release — and it
+presents that engine as safe `Store` / `Encoder` / `Federation` types. Read
 *Authentication & Licensing* and *Conventions* first — they apply to every
 function and are not repeated per entry.
 

@@ -245,7 +245,7 @@ store.put(b"sensitive content", embedding)   # encrypted transparently
 
 ## Configuration
 
-### `StoreConfig(model_id="BAAI/bge-small-en-v1.5", eigen_threshold=5, eigen_min_age_s=60.0, tau_similarity=0.5, tau_merge=0.92, max_index_elements=100000, custom_range=None, search_max_depth=50, search_visit_cap_multiplier=20, redirect_per_frame=True, secure=None, eigen_matmul_min=256, encryption_passphrase=None, search_use_stream=False, search_stream_threshold=50000, search_stream_beam=16)`
+### `StoreConfig(model_id="BAAI/bge-small-en-v1.5", eigen_threshold=5, eigen_min_age_s=0.0, tau_similarity=0.5, tau_merge=0.92, max_index_elements=100000, custom_range=None, search_max_depth=50, search_visit_cap_multiplier=20, redirect_per_frame=True, secure=None, eigen_matmul_min=256, encryption_passphrase=None, search_use_stream=False, search_stream_threshold=50000, search_stream_beam=16)`
 
 Store configuration object.
 
@@ -259,7 +259,7 @@ StoreConfig(...) -> StoreConfig
 |---|---|---|---|---|
 | `model_id` | `str` | no | `"BAAI/bge-small-en-v1.5"` | Embedding model identifier (permanent for the store). |
 | `eigen_threshold` | `int` | no | `5` | In-degree threshold for eigenframe promotion. |
-| `eigen_min_age_s` | `float` | no | `60.0` | Minimum age (seconds) before promotion. |
+| `eigen_min_age_s` | `float` | no | `0.0` | Minimum age (seconds) before promotion. Persisted in the header, so an existing store keeps the value it was created with. |
 | `tau_similarity` | `float` | no | `0.5` | Default similarity threshold. |
 | `tau_merge` | `float` | no | `0.92` | Consolidation merge threshold. |
 | `max_index_elements` | `int` | no | `100000` | Max elements in the graph index. |
@@ -391,10 +391,38 @@ store.put_with_embedding(content, embedding) -> str
 
 ### `store.put_batch(items)`
 
-Two-phase batch ingest: all items see the same pre-batch state for parent selection, eliminating first-mover advantage.
+Deprecated alias of `put_batch_incremental`.
+
+The two-phase snapshot path this name used to run was removed from the engine: it
+froze parent selection against the pre-batch store, so no item in a batch could
+attach to another, and a bulk load into a new store collapsed into a flat star on
+genesis with no item ever eligible for eigenframe promotion. Calls now take the
+incremental path: geometry identical to a sequential `put` loop, buffered writes.
+Leaves the store buffered — call `flush()` when the load is done. New code should
+call `put_batch_incremental` directly.
 
 ```python
 store.put_batch(items) -> list[str]
+```
+
+**Parameters**
+
+| Name | Type | Required | Default | Description |
+|---|---|---|---|---|
+| `items` | `list[tuple[bytes, list[float]]]` | yes | -- | List of `(content, embedding)` tuples. |
+
+**Returns:** `list[str]` — frame IDs, one per item.
+
+**Raises:** `RuntimeError` if any embedding dimension mismatches, or the store is sealed/closed.
+
+### `store.put_batch_incremental(items)`
+
+Batch ingest in which each parent is selected against the live store, so an item may attach to an earlier item of the same batch. This is the bulk-ingest path: it produces the same topology as calling `put` in a loop, at a fraction of the cost, because writes are buffered rather than flushed per frame.
+
+Insertion order affects the resulting tree — order the batch meaningfully before calling. The store is left in buffered mode; call `flush()` when the load is finished.
+
+```python
+store.put_batch_incremental(items) -> list[str]
 ```
 
 **Parameters**
@@ -1692,6 +1720,52 @@ store.retract_relation(from_id, to_id, relation) -> None
 
 **Raises:** `RuntimeError` if the store is closed.
 
+### `store.sim_neighbors(frame_id)`
+
+Similarity neighbours of a frame — the **live** edge set.
+
+Includes edges other frames aimed at this one, so it is the traversable
+neighbourhood rather than the frame's own choice. For that, see
+`store.committed_sim_edges`.
+
+```python
+store.sim_neighbors(frame_id) -> list[tuple[str, float]]
+```
+
+**Parameters**
+
+| Name | Type | Required | Default | Description |
+|---|---|---|---|---|
+| `frame_id` | `str` | yes | -- | Frame whose neighbours to list. |
+
+**Returns:** `list[tuple[str, float]]` — `(frame_id, weight)` pairs; empty for an unknown frame.
+
+**Raises:** `RuntimeError` on a closed store.
+
+### `store.committed_sim_edges(frame_id)`
+
+The similarity neighbours this frame **chose at commit time**, resolved to ids.
+
+Provenance rather than topology: what the frame decided against the store as it
+stood, not what accumulated around it afterwards. Always a subset of
+`store.sim_neighbors`. Returns `None` for a frame written before the choice was
+recorded — recovering those requires a replay, so stores built before the
+similarity choice was persisted will answer `None` throughout.
+
+```python
+store.committed_sim_edges(frame_id) -> list[tuple[str, float]] | None
+```
+
+**Parameters**
+
+| Name | Type | Required | Default | Description |
+|---|---|---|---|---|
+| `frame_id` | `str` | yes | -- | Frame whose committed choice to read. |
+
+**Returns:** `list[tuple[str, float]]` — `(frame_id, weight)` pairs — or `None` if the frame predates the recording.
+
+**Raises:** `RuntimeError` on a closed store.
+
 ### `store.structural_neighbors(frame_id, relations, direction="outgoing")`
 
 Find neighbors via typed edges.
@@ -1937,9 +2011,43 @@ seraph.verify_chain(frames, genesis_seed=None) -> tuple[bool, str | None]
 
 **Raises:** Does not raise (returns the failure tuple instead).
 
+### `seraph.migrate_store(src_path, dst_path)`
+
+Rebuild a store's topology while preserving everything else. Every frame is re-committed into a fresh store at `dst_path` with its identity intact — same frame id, timestamp, content, embedding, metadata, `status_ref` and `status_sources` — but with its parent selected against the live destination. The GIL is released for the whole migration.
+
+Preserving ids is what makes this a migration rather than a rebuild: typed-edge sentinels, supersede sentinels and redirect targets all reference frames by id, so they stay valid without remapping and reconstruct on the destination's first open.
+
+Use it to correct a topology built by an older parent-selection strategy or by the two-phase batch path, and as the carrier for frame-format changes — the destination is always created at the current format version. Embeddings are carried verbatim; this does **not** re-encode, and a destination model mismatch is rejected. Use `reencode_store` when the embeddings themselves must change.
+
+Eigenframe status is deliberately not carried: source eigenframes are committed as `Active` so the destination promotes on its own geometry. Watermarks are recomputed from each frame's new parent, so they differ from the source by construction; the destination chain is internally valid and `verify()` passes.
+
+```python
+seraph.migrate_store(src_path, dst_path) -> dict
+```
+
+**Parameters**
+
+| Name | Type | Required | Default | Description |
+|---|---|---|---|---|
+| `src_path` | `str` | yes | -- | Source `.sfg` path. Opened read-only. |
+| `dst_path` | `str` | yes | -- | Destination `.sfg` path. Created fresh. |
+
+**Returns:** `dict[str, int]` with keys `content`, `seeds`, `sentinels`, `superseded`, `redirects`, `skipped`, `on_genesis`. A high `on_genesis` relative to `content` indicates a star rather than a tree.
+
+**Raises:** `RuntimeError` if the source cannot be opened or the destination model does not match the source.
+
+**Example**
+
+```python
+report = seraph.migrate_store("old.sfg", "new.sfg")
+# {'content': 1335, 'seeds': 0, 'sentinels': 22, 'on_genesis': 1, ...}
+```
+
 ### `seraph.reencode_store(src_path, dst_path, model_id, eigen_threshold, n_max=0, pbatch=2000, ebatch=16)`
 
-Module-level bulk builder. Stream every active-content frame out of the store at `src_path`, re-encode it with `model_id`, and ingest the fresh embeddings into a new TurboQuant store at `dst_path` — entirely in Rust, with the GIL released for the whole build. Encode (GPU) overlaps ingest (CPU) on native threads and embeddings never cross the Python boundary, so throughput approaches the raw encode ceiling instead of serializing encode against `put_batch`. The `.gidx` sidecar is not written; similarity edges reconstruct from the frame log on first open.
+Module-level bulk builder. Stream every active-content frame out of the store at `src_path`, re-encode it with `model_id`, and ingest the fresh embeddings into a new TurboQuant store at `dst_path` — entirely in Rust, with the GIL released for the whole build. Encode (GPU) overlaps ingest (CPU) on native threads and embeddings never cross the Python boundary, so throughput approaches the raw encode ceiling instead of serializing the two. The `.gidx` sidecar is not written. Each frame records the similarity neighbours it committed to, so the destination's first open reads them back rather than re-deriving them: opening a bare `.sfg` costs the frame-log parse, not a commit-time walk per frame. (Before frames carried that record, reconstruction meant re-running the walk — measured at 2,735 µs/frame, roughly 41 minutes at 900k.)
+
+Frames are ingested in source commit order, each parent selected against the live destination, so the rebuilt store carries a properly built parent tree following the source's own accumulation order. `pbatch` therefore controls buffering only, not topology.
 
 ```python
 seraph.reencode_store(src_path, dst_path, model_id, eigen_threshold, n_max=0, pbatch=2000, ebatch=16) -> int
@@ -1954,7 +2062,7 @@ seraph.reencode_store(src_path, dst_path, model_id, eigen_threshold, n_max=0, pb
 | `model_id` | `str` | yes | -- | Embedding model for the destination store (fixed at genesis). |
 | `eigen_threshold` | `int` | yes | -- | In-degree threshold for eigenframe promotion in the destination. |
 | `n_max` | `int` | no | `0` | Cap on frames ingested (`0` = all). |
-| `pbatch` | `int` | no | `2000` | `put_batch` accumulation size (frames per ingest batch). |
+| `pbatch` | `int` | no | `2000` | Frames per ingest batch (`put_batch_incremental`). |
 | `ebatch` | `int` | no | `16` | Encoder batch size (content chunks per encode call). |
 
 **Returns:** `int` — number of frames ingested into the destination store.

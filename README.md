@@ -87,8 +87,14 @@ Prebuilt binaries and wheels in this release cover **Windows** and **Linux x86_6
 
 **GPU requirements (candle and ONNX):**
 - NVIDIA GPU with compute capability ≥ 7.0 (Volta or newer)
-- NVIDIA driver ≥ 520 (CUDA 11.8+ runtime compatibility)
-- No separate CUDA toolkit install needed for candle — it loads CUDA at runtime via the driver
+- NVIDIA driver ≥ 580 for Windows builds, ≥ 560 for Linux builds. The two are
+  compiled with different CUDA toolkits (13.1 and 12.6), and the PTX ISA version
+  that produces sets the driver floor
+- **CUDA toolkit is optional, but it is what enables the GPU.** The binary loads
+  without it — CUDA libraries are resolved lazily, so a machine with no CUDA at
+  all starts normally and runs on CPU. Actually *using* the GPU needs the toolkit
+  runtime libraries (`cudart`, `cublas`, `curand`), because candle creates a cuBLAS
+  handle when it opens the device. Driver-only machines fall back to CPU
 
 **ONNX requirements:**
 - ONNX Runtime 1.19+ with CUDA EP — download from [ORT releases](https://github.com/microsoft/onnxruntime/releases), or install via vcpkg/nuget/apt
@@ -99,9 +105,10 @@ Prebuilt binaries and wheels in this release cover **Windows** and **Linux x86_6
 **ONNX Python builds** use `onnxruntime-gpu` as a pip dependency — install via `pip install seraph-db-onnx` and pip handles ORT automatically.
 
 **Versions locked in this release:**
-- Candle 0.10 (pure-Rust ML inference — GPU builds)
+- Candle 0.10 (pure-Rust ML inference — GPU builds), patched so CUDA is loaded
+  lazily rather than at image load; this is what makes the CPU fallback reachable
 - ONNX Runtime 1.19+ with CUDA EP (ONNX builds)
-- cudarc 0.19.7 (CUDA runtime loading — supports CUDA 11.8 through 13.x)
+- cudarc 0.19.7 (lazy CUDA loading) — detects CUDA runtimes 10.x through 13.x
 - Python 3.8+ (abi3 wheels — `cp38-abi3`; built with 3.13)
 
 ### 2. Activate Your License

@@ -139,6 +139,7 @@ extern "C" {
 
     // Ingest — batch, seed, promote
     fn seraph_store_put_batch(handle: *mut c_void, items_json: *const c_char) -> *mut c_char;
+    fn seraph_store_put_batch_incremental(handle: *mut c_void, items_json: *const c_char) -> *mut c_char;
     fn seraph_store_add_seed(
         handle: *mut c_void, label: *const c_char,
         embedding: *const f32, embedding_len: usize,
@@ -220,6 +221,8 @@ extern "C" {
     fn seraph_store_steerability(handle: *mut c_void, query_embedding: *const f32, query_len: usize, target_id: *const c_char) -> f32;
     fn seraph_store_region_health(handle: *mut c_void, eigenframe_id: *const c_char) -> *mut c_char;
     fn seraph_store_similarity_stats(handle: *mut c_void) -> *mut c_char;
+    fn seraph_store_sim_neighbors(handle: *mut c_void, frame_id: *const c_char) -> *mut c_char;
+    fn seraph_store_committed_sim_edges(handle: *mut c_void, frame_id: *const c_char) -> *mut c_char;
     fn seraph_store_resolve_tau(handle: *mut c_void) -> f32;
     fn seraph_store_resolve_tau_spec(handle: *mut c_void, mode: i32, value: f32) -> f32;
     fn seraph_store_drift_report(handle: *mut c_void, window: usize, threshold: f32) -> *mut c_char;
@@ -366,6 +369,9 @@ extern "C" {
     ) -> *mut c_char;
 
     // Re-encode pipeline (v2/v1 source -> fresh v3 destination)
+    fn seraph_migrate_store(
+        src_path: *const c_char, dst_path: *const c_char,
+    ) -> *mut c_char;
     fn seraph_reencode_store(
         src_path: *const c_char, dst_path: *const c_char, model_id: *const c_char,
         eigen_threshold: u32, n_max: usize, pbatch: usize, ebatch: usize, out_n: *mut usize,
@@ -1183,9 +1189,33 @@ impl Store {
     ///
     /// `items_json` is a JSON array of `{"content": "...", "embedding": [...]}` or
     /// `{"content_b64": "...", "embedding": [...]}`.
+    ///
+    /// Deprecated alias of [`Self::put_batch_incremental_json`]: the two-phase
+    /// snapshot path this name used to run was removed from the engine (it
+    /// collapsed bulk loads into a star), and the FFI symbol now takes the
+    /// incremental path. Leaves the store buffered: call `sync()` when done.
     pub fn put_batch_json(&mut self, items_json: &str) -> Result<Vec<String>, Error> {
         let json_c = to_cstring(items_json);
         let p = unsafe { seraph_store_put_batch(self.handle, json_c.as_ptr()) };
+        if p.is_null() { return Err(last_error()); }
+        let json = unsafe { take_cstring(p) };
+        Ok(serde_json::from_str(&json).unwrap_or_default())
+    }
+
+    /// Batch insert that lets the batch see itself — the geometrically true
+    /// batched path, and the right default for bulk loads.
+    ///
+    /// Same `items_json` shape as [`Self::put_batch_json`]. Parents are selected
+    /// against the live store, so a real tree forms: geometry identical to
+    /// calling `put` in a loop on every metric measured, at roughly 7.8x the
+    /// speed because writes are buffered.
+    ///
+    /// Insertion-order dependent — order the batch meaningfully
+    /// (most-central-first) before calling. Leaves the store in buffered mode:
+    /// call `sync()` when the load is done.
+    pub fn put_batch_incremental_json(&mut self, items_json: &str) -> Result<Vec<String>, Error> {
+        let json_c = to_cstring(items_json);
+        let p = unsafe { seraph_store_put_batch_incremental(self.handle, json_c.as_ptr()) };
         if p.is_null() { return Err(last_error()); }
         let json = unsafe { take_cstring(p) };
         Ok(serde_json::from_str(&json).unwrap_or_default())
@@ -1570,6 +1600,31 @@ impl Store {
     /// Similarity distribution. Returns JSON.
     pub fn similarity_stats_json(&self) -> Option<String> {
         let p = unsafe { seraph_store_similarity_stats(self.handle) };
+        if p.is_null() { None } else { Some(unsafe { take_cstring(p) }) }
+    }
+
+    /// Similarity neighbours of a frame — the LIVE edge set. Returns a JSON
+    /// array of `{"frame_id", "weight"}`.
+    ///
+    /// Includes edges other frames aimed at this one, so it is the traversable
+    /// neighbourhood rather than the frame's own choice — for that see
+    /// [`Self::committed_sim_edges_json`].
+    pub fn sim_neighbors_json(&self, frame_id: &str) -> Option<String> {
+        let c = std::ffi::CString::new(frame_id).ok()?;
+        let p = unsafe { seraph_store_sim_neighbors(self.handle, c.as_ptr()) };
+        if p.is_null() { None } else { Some(unsafe { take_cstring(p) }) }
+    }
+
+    /// The similarity neighbours a frame CHOSE at commit time. Returns a JSON
+    /// array of `{"frame_id", "weight"}`, or JSON `null` for a frame written
+    /// before the choice was recorded.
+    ///
+    /// Provenance rather than topology: what the frame decided against the
+    /// store as it stood, not what accumulated around it. Always a subset of
+    /// [`Self::sim_neighbors_json`].
+    pub fn committed_sim_edges_json(&self, frame_id: &str) -> Option<String> {
+        let c = std::ffi::CString::new(frame_id).ok()?;
+        let p = unsafe { seraph_store_committed_sim_edges(self.handle, c.as_ptr()) };
         if p.is_null() { None } else { Some(unsafe { take_cstring(p) }) }
     }
 
@@ -2273,6 +2328,63 @@ pub fn reencode_store(
         )
     };
     if rc != 0 { Err(last_error()) } else { Ok(out_n) }
+}
+
+/// What a [`migrate_store`] run carried across.
+#[derive(Debug, Clone, Default)]
+pub struct MigrateReport {
+    pub content: usize,
+    pub seeds: usize,
+    pub sentinels: usize,
+    pub superseded: usize,
+    pub redirects: usize,
+    pub skipped: usize,
+    /// Content frames whose parent came out as genesis — a star indicator.
+    pub on_genesis: usize,
+}
+
+/// Rebuild a store's topology while preserving everything else.
+///
+/// Re-commits every frame into a fresh destination with its identity intact —
+/// same frame id, timestamp, content, embedding, metadata, `status_ref` and
+/// `status_sources` — but with its parent selected against the live
+/// destination. Preserving ids is what makes it a migration rather than a
+/// rebuild: typed-edge sentinels, supersede sentinels and redirect targets all
+/// reference frames by id, so they stay valid without remapping and
+/// reconstruct on the destination's first open.
+///
+/// Use it to correct a topology built by an older parent-selection strategy or
+/// by the two-phase batch path, and as the carrier for frame-format changes —
+/// the destination is always created at the current format version.
+///
+/// Eigenframe status is deliberately not carried: source eigenframes are
+/// committed as `Active` so the destination promotes on its own geometry.
+/// Watermarks are recomputed from each frame's new parent, so they differ from
+/// the source by construction; the destination chain is internally valid and
+/// `verify()` passes.
+///
+/// Embeddings are carried verbatim — this does not re-encode. The destination
+/// keeps the source's model, and a mismatched model is rejected.
+pub fn migrate_store(
+    src_path: impl AsRef<Path>,
+    dst_path: impl AsRef<Path>,
+) -> Result<MigrateReport, Error> {
+    let src_c = path_to_cstring(src_path.as_ref());
+    let dst_c = path_to_cstring(dst_path.as_ref());
+    let p = unsafe { seraph_migrate_store(src_c.as_ptr(), dst_c.as_ptr()) };
+    if p.is_null() { return Err(last_error()); }
+    let json = unsafe { take_cstring(p) };
+    let v: serde_json::Value = serde_json::from_str(&json).unwrap_or_default();
+    let g = |k: &str| v.get(k).and_then(|x| x.as_u64()).unwrap_or(0) as usize;
+    Ok(MigrateReport {
+        content: g("content"),
+        seeds: g("seeds"),
+        sentinels: g("sentinels"),
+        superseded: g("superseded"),
+        redirects: g("redirects"),
+        skipped: g("skipped"),
+        on_genesis: g("on_genesis"),
+    })
 }
 
 fn take_hits(hits_ptr: *mut FfiHit, count: usize) -> Vec<Hit> {

@@ -226,10 +226,33 @@ pub fn put_with_metadata(
 
 Batch-ingest content/embedding pairs. `items_json` is a JSON array of
 `{"content": "...", "embedding": [...]}` (or `{"content_b64": "..."}`). Returns
-the new frame IDs. This is the bulk-ingest path — prefer it over a `put` loop.
+the new frame IDs.
+
+Deprecated alias of `put_batch_incremental_json`. The two-phase snapshot path
+this name used to run was removed from the engine: it froze parent selection
+against the pre-batch store, so no frame in a batch could attach to another and
+a bulk load into a new store collapsed into a flat star. Calls now take the
+incremental path (geometry identical to sequential `put`, buffered writes);
+call `sync()` when the load is done. New code should call
+`put_batch_incremental_json` directly.
 
 ```rust
 pub fn put_batch_json(&mut self, items_json: &str) -> Result<Vec<String>, Error>
+```
+
+### `Store::put_batch_incremental_json`
+
+Batch-ingest content/embedding pairs, selecting each parent against the live
+store so a frame may attach to an earlier frame of the same batch. Same
+`items_json` shape as `put_batch_json`. This is the bulk-ingest path: it
+produces the same topology as a `put` loop at a fraction of the cost, because
+writes are buffered rather than flushed per frame.
+
+Insertion order affects the resulting tree — order the batch meaningfully before
+calling. Leaves the store in buffered mode; call `sync` when the load is done.
+
+```rust
+pub fn put_batch_incremental_json(&mut self, items_json: &str) -> Result<Vec<String>, Error>
 ```
 
 ### `Store::begin_batch`
@@ -826,6 +849,32 @@ Parent-child similarity distribution as JSON.
 pub fn similarity_stats_json(&self) -> Option<String>
 ```
 
+### `Store::sim_neighbors_json`
+
+Similarity neighbours of a frame — the **live** edge set — as a JSON array of
+`{"frame_id", "weight"}`.
+
+Includes edges other frames aimed at this one, so it is the traversable
+neighbourhood rather than the frame's own choice. For that, see
+`committed_sim_edges_json`.
+
+```rust
+pub fn sim_neighbors_json(&self, frame_id: &str) -> Option<String>
+```
+
+### `Store::committed_sim_edges_json`
+
+The similarity neighbours a frame **chose at commit time**, as a JSON array of
+`{"frame_id", "weight"}`, or JSON `null` for a frame written before the choice
+was recorded.
+
+Provenance rather than topology: what the frame decided against the store as it
+stood, not what accumulated around it. Always a subset of `sim_neighbors_json`.
+
+```rust
+pub fn committed_sim_edges_json(&self, frame_id: &str) -> Option<String>
+```
+
 ### `Store::resolve_tau`
 
 The store's auto-resolved tau (its p95 parent-child similarity).
@@ -1315,12 +1364,48 @@ pub fn encode_batch_json(&mut self, texts_json: &str) -> Result<String, Error>
 
 ## Migration
 
+### `migrate_store`
+
+Rebuild a store's topology while preserving everything else. Every frame is
+re-committed into a fresh destination with its identity intact — same frame id,
+timestamp, content, embedding, metadata, `status_ref` and `status_sources` — but
+with its parent selected against the live destination. Returns a `MigrateReport`
+counting what was carried. Free function.
+
+Preserving ids is what makes this a migration rather than a rebuild: typed-edge
+sentinels, supersede sentinels and redirect targets all reference frames by id,
+so they stay valid without remapping and reconstruct on the destination's first
+open.
+
+Use it to correct a topology built by an older parent-selection strategy or by
+the two-phase batch path, and as the carrier for frame-format changes — the
+destination is always created at the current format version. Embeddings are
+carried verbatim; this does **not** re-encode, and a destination model mismatch
+is rejected. Use `reencode_store` when the embeddings themselves must change.
+
+Eigenframe status is deliberately not carried: source eigenframes are committed
+as `Active` so the destination promotes on its own geometry. Watermarks are
+recomputed from each frame's new parent, so they differ from the source by
+construction; the destination chain is internally valid and `verify` passes.
+
+```rust
+pub fn migrate_store(
+    src_path: impl AsRef<Path>,
+    dst_path: impl AsRef<Path>,
+) -> Result<MigrateReport, Error>
+```
+
 ### `reencode_store`
 
 Re-encode a source store into a fresh v3 destination store: streams active
 content frames, re-encodes them with `model_id`, and bulk-ingests into a new v3
 store. `n_max == 0` re-encodes all; `pbatch == 0` → 2000; `ebatch == 0` → 16.
 Returns the number of frames ingested. Free function.
+
+Frames are ingested in source commit order, each parent selected against the
+live destination, so the rebuilt store carries a properly built parent tree
+following the source's own accumulation order. `pbatch` therefore controls
+buffering only, not topology.
 
 ```rust
 pub fn reencode_store(

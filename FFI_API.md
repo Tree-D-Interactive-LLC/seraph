@@ -114,7 +114,7 @@ void* seraph_store_create(const char* path, const char* model_id, const char* co
 | Field | Type | Default | Description |
 |---|---|---|---|
 | `eigen_threshold` | int | 5 | In-degree at which a frame is promoted to eigenframe. |
-| `eigen_min_age_s` | float | 60.0 | Minimum age (seconds) before a frame is promotion-eligible. |
+| `eigen_min_age_s` | float | 0.0 | Minimum age (seconds) before a frame is promotion-eligible. Persisted in the header, so an existing store keeps the value it was created with. |
 | `tau_similarity` | float | 0.5 | Default similarity-edge threshold. |
 | `tau_merge` | float | 0.92 | Consolidation merge threshold. |
 | `max_index_elements` | int | 100000 | Index capacity hint. |
@@ -443,9 +443,46 @@ int64_t seraph_store_last_search_visits(void* handle);
 **Parameters:** `handle` (`void*`, yes).
 **Returns:** Visit count (`>= 0`), or `-1` on error.
 
+### `seraph_migrate_store`
+
+Rebuild a store's topology while preserving everything else. Every frame is re-committed into a fresh destination at `dst_path` with its identity intact — same frame id, timestamp, content, embedding, metadata, `status_ref` and `status_sources` — but with its parent selected against the live destination.
+
+Preserving ids is what makes this a migration rather than a rebuild: typed-edge sentinels, supersede sentinels and redirect targets all reference frames by id, so they stay valid without remapping and reconstruct on the destination's first open.
+
+Use it to correct a topology built by an older parent-selection strategy or by the two-phase batch path, and as the carrier for frame-format changes — the destination is always created at the current format version. Embeddings are carried verbatim; this does **not** re-encode, and a destination model mismatch is rejected. Use `seraph_reencode_store` when the embeddings themselves must change.
+
+Eigenframe status is deliberately not carried: source eigenframes are committed as `Active` so the destination promotes on its own geometry. Watermarks are recomputed from each frame's new parent, so they differ from the source by construction; the destination chain is internally valid and `seraph_store_verify` passes.
+
+```c
+char* seraph_migrate_store(const char* src_path, const char* dst_path);
+```
+
+**Parameters**
+
+| Name | Type | Required | Description |
+|---|---|---|---|
+| `src_path` | `const char*` | yes | Source `.sfg` path. Opened read-only. |
+| `dst_path` | `const char*` | yes | Destination `.sfg` path. Created fresh. |
+
+**Returns:** JSON object `{content, seeds, sentinels, superseded, redirects, skipped, on_genesis}` (free with `seraph_string_free`), or `NULL` on error. A high `on_genesis` relative to `content` indicates a star rather than a tree.
+
+**Errors:** `NULL` if either path is null, the source cannot be opened, or the destination model does not match the source.
+
+**Example**
+
+```c
+char* rep = seraph_migrate_store("old.sfg", "new.sfg");
+// rep -> {"content":1335,"seeds":0,"sentinels":22,...,"on_genesis":1}
+seraph_string_free(rep);
+```
+
+---
+
 ### `seraph_reencode_store`
 
-Re-encode a source store into a fresh **v3** destination store (`format_version = 3`). Streams active-content frames from `src_path`, re-encodes them with `model_id` on a dedicated encoder thread, and bulk-ingests the resulting f32 embeddings via the batched snapshot path. The `.gidx` is not written (frame log only); similarity edges reconstruct from the log on the first open.
+Re-encode a source store into a fresh **v3** destination store (`format_version = 3`). Streams active-content frames from `src_path`, re-encodes them with `model_id` on a dedicated encoder thread, and bulk-ingests the resulting f32 embeddings. The `.gidx` is not written (frame log only). Each frame records the similarity neighbours it committed to, so the first open reads them back rather than re-deriving them by walking — a bare `.sfg` costs the frame-log parse, not a commit-time walk per frame.
+
+Frames are ingested in source commit order, each parent selected against the live destination, so the rebuilt store carries a properly built parent tree following the source's own accumulation order. `pbatch` therefore controls buffering only, not topology.
 
 ```c
 int seraph_reencode_store(
@@ -469,7 +506,7 @@ int seraph_reencode_store(
 | `model_id` | `const char*` | yes | Embedding model for the destination genesis. |
 | `eigen_threshold` | `uint32_t` | yes | In-degree promotion threshold for the destination. |
 | `n_max` | `size_t` | yes | Cap on frames re-encoded; `0` = all active-content frames. |
-| `pbatch` | `size_t` | yes | Frames per `put_batch`; `0` → default 2000. |
+| `pbatch` | `size_t` | yes | Frames per ingest batch (`put_batch_incremental`); `0` → default 2000. |
 | `ebatch` | `size_t` | yes | Frames per encode batch; `0` → default 16. |
 | `out_n` | `size_t*` | no | Out: number of frames ingested. Ignored if `NULL`. |
 
@@ -633,8 +670,16 @@ seraph_string_free(fid);
 
 ### `seraph_store_put_batch`
 
-Two-phase batch ingest: all items see the same pre-batch state for parent
-selection, so insertion order does not bias topology.
+Deprecated alias of `seraph_store_put_batch_incremental`, kept so existing
+binaries keep linking.
+
+The two-phase snapshot path this name used to run was removed from the engine:
+it froze parent selection against the pre-batch store, so no frame in a batch
+could attach to another, and a bulk load into a new store collapsed into a flat
+star on genesis with no frame ever eligible for eigenframe promotion. Calls now
+take the incremental path: geometry identical to sequential `put`, buffered
+writes. Leaves the store buffered — call `seraph_store_sync` when the load is
+done. New code should call `seraph_store_put_batch_incremental` directly.
 
 ```c
 char* seraph_store_put_batch(void* handle, const char* items_json);
@@ -658,6 +703,43 @@ char* ids = seraph_store_put_batch(store,
     "[{\"content_b64\":\"aGVsbG8=\",\"embedding\":[0.1,0.2]}]");
 // ids -> ["<frame-id>"]
 seraph_string_free(ids);
+```
+
+---
+
+### `seraph_store_put_batch_incremental`
+
+Batch ingest in which each parent is selected against the live store, so a frame
+may attach to an earlier frame of the same batch. This is the bulk-ingest path:
+it produces the same topology as calling `seraph_store_put` in a loop, at a
+fraction of the cost, because writes are buffered rather than flushed per frame.
+
+Insertion order affects the resulting tree — order the batch meaningfully before
+calling. The store is left in buffered mode; call `seraph_store_sync` when the
+load is finished.
+
+```c
+char* seraph_store_put_batch_incremental(void* handle, const char* items_json);
+```
+
+**Parameters**
+
+| Name | Type | Required | Description |
+|---|---|---|---|
+| `handle` | `void*` | yes | Store handle. |
+| `items_json` | `const char*` | yes | JSON array of `{content_b64, embedding, metadata?}` objects. |
+
+**Returns:** JSON array of frame IDs (free with `seraph_string_free`), or `NULL` on error.
+
+**Errors:** `NULL` if `items_json` is malformed, any embedding dimension mismatches, or the store is sealed.
+
+**Example**
+
+```c
+char* ids = seraph_store_put_batch_incremental(store,
+    "[{\"content_b64\":\"aGVsbG8=\",\"embedding\":[0.1,0.2]}]");
+seraph_string_free(ids);
+seraph_store_sync(store);
 ```
 
 ---
@@ -1883,6 +1965,34 @@ char* seraph_store_similarity_stats(void* handle);
 
 **Parameters:** `handle` (`void*`, yes).
 **Returns:** JSON similarity distribution (free with `seraph_string_free`), or `NULL`. **Response:** [PLACEHOLDER: similarity stats JSON shape]
+
+### `seraph_store_sim_neighbors`
+
+```c
+char* seraph_store_sim_neighbors(void* handle, const char* frame_id);
+```
+
+Similarity neighbours of a frame — the **live** edge set. Includes edges other
+frames aimed at this one, so it is the traversable neighbourhood rather than
+the frame's own choice; for that see `seraph_store_committed_sim_edges`.
+
+**Parameters:** `handle` (`void*`, yes), `frame_id` (`const char*`, yes).
+**Returns:** JSON array of `{"frame_id": "...", "weight": 0.87}` (free with `seraph_string_free`), `[]` for an unknown frame, or `NULL` on error.
+
+### `seraph_store_committed_sim_edges`
+
+```c
+char* seraph_store_committed_sim_edges(void* handle, const char* frame_id);
+```
+
+The similarity neighbours a frame **chose at commit time**, resolved to ids.
+Provenance rather than topology: what the frame decided against the store as it
+stood, not what accumulated around it. Always a subset of
+`seraph_store_sim_neighbors`. Frames written before the choice was recorded
+return JSON `null` — recovering theirs requires a replay.
+
+**Parameters:** `handle` (`void*`, yes), `frame_id` (`const char*`, yes).
+**Returns:** JSON array of `{"frame_id": "...", "weight": 0.87}`, JSON `null` if unrecorded (free with `seraph_string_free`), or `NULL` on error.
 
 ### `seraph_store_similarity_stats_struct`
 

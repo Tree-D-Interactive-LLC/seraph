@@ -956,6 +956,227 @@ store.add_seed(label, embedding, metadata_json="{}") -> str
 
 **Raises:** `RuntimeError` on dimension mismatch, a sealed store, or a closed store.
 
+### `store.get_seeds()`
+
+The authored seed list — an append-only registry of `label -> frame_id`
+bindings held in a `_seraph_seeds:` System sentinel.
+
+A binding may name **any** frame, not only a Seed-status one, which is how an
+eigenframe the geometry grew gets a stable name. When no registry has ever been
+authored the list is derived from the store's Seed-status frames instead, so a
+store predating the registry still answers; `seeds_are_authored()` tells the two
+apart.
+
+```python
+store.get_seeds() -> list[SeedEntry]
+```
+
+*No parameters.*
+
+**Returns:** `list[SeedEntry]` — each with `.label` and `.frame_id`, in authored
+order.
+
+**Raises:** `RuntimeError` if the store is closed.
+
+**Example**
+
+```python
+for s in store.get_seeds():
+    print(s.label, s.frame_id)
+```
+
+### `store.seeds_are_authored()`
+
+Whether the seed list comes from a registry sentinel rather than being derived
+from Seed-status frames. An authored **empty** registry is a real state and is
+authoritative — it does not fall back to the derived list.
+
+```python
+store.seeds_are_authored() -> bool
+```
+
+*No parameters.*
+
+**Returns:** `bool` — `True` if authored, `False` if derived.
+
+**Raises:** `RuntimeError` if the store is closed.
+
+### `store.resolve_seed(label)`
+
+Resolve a seed label to its frame id. Labels are unique within a registry.
+
+```python
+store.resolve_seed(label) -> str | None
+```
+
+**Parameters**
+
+| Name | Type | Required | Default | Description |
+|---|---|---|---|---|
+| `label` | `str` | yes | -- | Seed label to resolve. |
+
+**Returns:** `str | None` — the frame ID, or `None` if the label is not
+registered.
+
+**Raises:** `RuntimeError` if the store is closed.
+
+### `store.set_seeds(entries)`
+
+Replace the whole registry, appending a new snapshot sentinel. The full list is
+rewritten on every mutation rather than journalled as a delta, so a reader
+resolves the registry with one read of the last snapshot instead of folding the
+store's history.
+
+Removing a label removes it from the authored set **only** — it does not demote
+the frame, which keeps whatever status and geometric pull it already had.
+
+```python
+store.set_seeds(entries) -> str
+```
+
+**Parameters**
+
+| Name | Type | Required | Default | Description |
+|---|---|---|---|---|
+| `entries` | `list[SeedEntry]` | yes | -- | The complete new registry. |
+
+**Returns:** `str` — the snapshot sentinel's frame ID.
+
+**Raises:** `RuntimeError` on an empty or duplicated label, a `frame_id` absent
+from the store, a sealed store, or a closed store.
+
+**Example**
+
+```python
+store.set_seeds([seraph.SeedEntry("evidence", fid)])
+```
+
+### `store.register_seed(label, frame_id)`
+
+Bind one label, appending a new snapshot. Rebinding an existing label updates it
+in place, preserving its authored position.
+
+```python
+store.register_seed(label, frame_id) -> str
+```
+
+**Parameters**
+
+| Name | Type | Required | Default | Description |
+|---|---|---|---|---|
+| `label` | `str` | yes | -- | Label to bind. |
+| `frame_id` | `str` | yes | -- | Frame to bind it to; must exist in the store. |
+
+**Returns:** `str` — the snapshot sentinel's frame ID.
+
+**Raises:** `RuntimeError` on an empty label, an unknown `frame_id`, a sealed
+store, or a closed store.
+
+### `store.unregister_seed(label)`
+
+Drop a label from the authored set, appending a new snapshot. The frame it named
+is untouched.
+
+```python
+store.unregister_seed(label) -> str
+```
+
+**Parameters**
+
+| Name | Type | Required | Default | Description |
+|---|---|---|---|---|
+| `label` | `str` | yes | -- | Label to drop. |
+
+**Returns:** `str` — the snapshot sentinel's frame ID.
+
+**Raises:** `RuntimeError` if the label is not registered, on a sealed store, or
+on a closed store.
+
+### `SeedEntry(label, frame_id)`
+
+One authored `label -> frame_id` binding in the seed registry. Returned by
+`get_seeds()` and accepted by `set_seeds()`.
+
+```python
+SeedEntry(label, frame_id) -> SeedEntry
+```
+
+**Parameters**
+
+| Name | Type | Required | Default | Description |
+|---|---|---|---|---|
+| `label` | `str` | yes | -- | Seed label; unique within a registry. |
+| `frame_id` | `str` | yes | -- | Frame the label names; need not be Seed-status. |
+
+**Returns:** `SeedEntry`. Read-only getters: `.label`, `.frame_id`. Supports
+`==` and `repr()`.
+
+### `store.put_subtree(root, content, embedding, metadata_json="{}")`
+
+Ingest content into a named subtree: the parent is chosen from inside `root`'s
+parent-edge subtree instead of from the store at large.
+
+The region is asserted by the caller; the position inside it is still derived by
+the geometry, so lineage stays graded and depth stays real. There is no
+similarity floor — a placement is asserted, so no score refuses it.
+
+Similarity edges are chosen **globally**, exactly as `put()` chooses them. Only
+the tree edge is overridden, so a placed frame remains reachable by ordinary
+`search()`. The frame is stamped with `_placed_under` so `migrate_store()`
+re-derives its position inside the same region rather than re-routing it.
+
+```python
+store.put_subtree(root, content, embedding, metadata_json="{}") -> str
+```
+
+**Parameters**
+
+| Name | Type | Required | Default | Description |
+|---|---|---|---|---|
+| `root` | `str` | yes | -- | Subtree root: a frame ID or a seed label. A frame ID wins if it resolves as one. |
+| `content` | `bytes` | yes | -- | Content bytes. |
+| `embedding` | `list[float]` | yes | -- | Embedding vector. |
+| `metadata_json` | `str` | no | `"{}"` | JSON metadata object. A caller-supplied `_placed_under` is overwritten. |
+
+**Returns:** `str` — the new frame ID.
+
+**Raises:** `RuntimeError` on an unknown root, dimension mismatch, a sealed
+store, or a closed store.
+
+**Example**
+
+```python
+fid = store.put_subtree("evidence", b"exhibit A", emb)
+```
+
+### `store.search_subtree(root, embedding, top_k=10, tau=None)`
+
+Search confined to a named subtree. Phase 1 is skipped entirely — the root is
+the entry point — and the traversal follows parent edges plus only those
+similarity edges whose target is inside the subtree.
+
+Ordinary `search()` is unaffected and still reaches these frames.
+
+```python
+store.search_subtree(root, embedding, top_k=10, tau=None) -> list[Hit]
+```
+
+**Parameters**
+
+| Name | Type | Required | Default | Description |
+|---|---|---|---|---|
+| `root` | `str` | yes | -- | Subtree root: a frame ID or a seed label. |
+| `embedding` | `list[float]` | yes | -- | Query embedding. |
+| `top_k` | `int` | no | `10` | Maximum results. |
+| `tau` | `float \| None` | no | `None` | Similarity threshold; `None` uses the store's configured `tau_similarity`. |
+
+**Returns:** `list[Hit]`.
+
+**Raises:** `RuntimeError` on an unknown root or a closed store.
+
+**Note:** Depth is bounded by `StoreConfig.search_max_depth`; the subtree itself
+bounds the visit count.
+
 ### `store.promote(frame_id)`
 
 Promote an active frame to eigenframe unconditionally. Promotion is monotonic.
@@ -2372,6 +2593,7 @@ All types below are registered PyO3 classes (verified against `py.rs` getters).
 | `RegionHealth` | `.coherence`, `.direction`, `.candidate_split` |
 | `SimilarityDistribution` | `.count`, `.mean`, `.p75`, `.p90`, `.p95`, `.p99` |
 | `SnapshotView` | `.frame_ids`, `.timestamp` |
+| `SeedEntry` | `.label`, `.frame_id` |
 | `SubtreeInfo` | `.root`, `.root_status`, `.descendant_count`, `.eigenframe_count`, `.max_depth` |
 | `DriftAlert` | `.frame_id`, `.frame_snippet`, `.mean_child_similarity`, `.drift_score`, `.child_count` |
 | `ContradictionCandidate` | `.frame_a_id`, `.frame_b_id`, `.shared_parent_id`, `.divergence` |

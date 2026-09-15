@@ -145,6 +145,26 @@ extern "C" {
         embedding: *const f32, embedding_len: usize,
         metadata_json: *const c_char,
     ) -> *mut c_char;
+    fn seraph_store_get_seeds(handle: *mut c_void) -> *mut c_char;
+    fn seraph_store_seeds_are_authored(handle: *mut c_void) -> i32;
+    fn seraph_store_resolve_seed(handle: *mut c_void, label: *const c_char) -> *mut c_char;
+    fn seraph_store_set_seeds(handle: *mut c_void, entries_json: *const c_char) -> *mut c_char;
+    fn seraph_store_register_seed(
+        handle: *mut c_void, label: *const c_char, frame_id: *const c_char,
+    ) -> *mut c_char;
+    fn seraph_store_unregister_seed(handle: *mut c_void, label: *const c_char) -> *mut c_char;
+    fn seraph_store_put_subtree(
+        handle: *mut c_void, root: *const c_char,
+        content: *const u8, content_len: usize,
+        embedding: *const f32, embedding_len: usize,
+        metadata_json: *const c_char,
+    ) -> *mut c_char;
+    fn seraph_store_search_subtree(
+        handle: *mut c_void, root: *const c_char,
+        query: *const f32, query_len: usize,
+        top_k: usize, tau: f32,
+        out_hits: *mut *mut FfiHit, out_count: *mut usize,
+    ) -> i32;
     fn seraph_store_promote(handle: *mut c_void, frame_id: *const c_char) -> i32;
     fn seraph_store_promote_content(
         handle: *mut c_void,
@@ -1233,6 +1253,124 @@ impl Store {
             )
         };
         if id.is_null() { Err(last_error()) } else { Ok(unsafe { take_cstring(id) }) }
+    }
+
+    /// The authored seed list as JSON: an array of `{label, frame_id}`.
+    ///
+    /// Derived from Seed-status frames when no registry has been authored —
+    /// see [`Self::seeds_are_authored`].
+    pub fn get_seeds(&self) -> Result<String, Error> {
+        let s = unsafe { seraph_store_get_seeds(self.handle) };
+        if s.is_null() { Err(last_error()) } else { Ok(unsafe { take_cstring(s) }) }
+    }
+
+    /// Whether the seed list is authored (a registry sentinel exists) rather
+    /// than derived from Seed-status frames.
+    pub fn seeds_are_authored(&self) -> Result<bool, Error> {
+        match unsafe { seraph_store_seeds_are_authored(self.handle) } {
+            -1 => Err(last_error()),
+            v  => Ok(v == 1),
+        }
+    }
+
+    /// Resolve a seed label to its frame id, or `None` if not registered.
+    pub fn resolve_seed(&self, label: &str) -> Result<Option<String>, Error> {
+        let label_c = to_cstring(label);
+        let id = unsafe { seraph_store_resolve_seed(self.handle, label_c.as_ptr()) };
+        if !id.is_null() {
+            return Ok(Some(unsafe { take_cstring(id) }));
+        }
+        // Null is both "not registered" and "failed". The export clears the
+        // error slot on entry and sets it only on failure, so an empty slot
+        // means the label simply is not bound.
+        if unsafe { seraph_last_error().is_null() } {
+            Ok(None)
+        } else {
+            Err(last_error())
+        }
+    }
+
+    /// Replace the whole registry with `entries_json`, a JSON array of
+    /// `{label, frame_id}`. Returns the snapshot sentinel's frame id.
+    pub fn set_seeds(&mut self, entries_json: &str) -> Result<String, Error> {
+        let entries_c = to_cstring(entries_json);
+        let id = unsafe { seraph_store_set_seeds(self.handle, entries_c.as_ptr()) };
+        if id.is_null() { Err(last_error()) } else { Ok(unsafe { take_cstring(id) }) }
+    }
+
+    /// Bind `label` to `frame_id`, appending a new snapshot. Rebinding an
+    /// existing label updates it in place.
+    pub fn register_seed(&mut self, label: &str, frame_id: &str) -> Result<String, Error> {
+        let label_c = to_cstring(label);
+        let fid_c = to_cstring(frame_id);
+        let id = unsafe {
+            seraph_store_register_seed(self.handle, label_c.as_ptr(), fid_c.as_ptr())
+        };
+        if id.is_null() { Err(last_error()) } else { Ok(unsafe { take_cstring(id) }) }
+    }
+
+    /// Drop `label` from the authored set. The frame it named is untouched.
+    pub fn unregister_seed(&mut self, label: &str) -> Result<String, Error> {
+        let label_c = to_cstring(label);
+        let id = unsafe { seraph_store_unregister_seed(self.handle, label_c.as_ptr()) };
+        if id.is_null() { Err(last_error()) } else { Ok(unsafe { take_cstring(id) }) }
+    }
+
+    /// Ingest content into a named subtree: the parent is chosen from inside
+    /// `root`'s parent-edge subtree instead of from the store at large.
+    ///
+    /// `root` is a frame id or a seed label. Similarity edges are still chosen
+    /// globally, so a placed frame stays reachable by ordinary
+    /// [`search`](Self::search) — only the tree edge is overridden. The frame
+    /// is stamped so a later migration re-derives its position inside the same
+    /// region rather than re-routing it.
+    pub fn put_subtree(
+        &mut self,
+        root: &str,
+        content: &[u8],
+        embedding: &[f32],
+        metadata_json: Option<&str>,
+    ) -> Result<String, Error> {
+        let root_c = to_cstring(root);
+        let meta_c = metadata_json.map(to_cstring);
+        let id = unsafe {
+            seraph_store_put_subtree(
+                self.handle, root_c.as_ptr(),
+                content.as_ptr(), content.len(),
+                embedding.as_ptr(), embedding.len(),
+                meta_c.as_ref().map_or(ptr::null(), |c| c.as_ptr()),
+            )
+        };
+        if id.is_null() { Err(last_error()) } else { Ok(unsafe { take_cstring(id) }) }
+    }
+
+    /// Search confined to a named subtree: entry is the root (no Phase-1
+    /// eigenframe scan), and the traversal follows parent edges plus only
+    /// those similarity edges whose target is inside the subtree.
+    ///
+    /// `root` is a frame id or a seed label. `tau` of `None` uses the store's
+    /// configured `tau_similarity`. Ordinary [`search`](Self::search) is
+    /// unaffected and still reaches frames inside the subtree.
+    pub fn search_subtree(
+        &self,
+        root: &str,
+        query: &[f32],
+        top_k: usize,
+        tau: Option<f32>,
+    ) -> Result<Vec<Hit>, Error> {
+        let root_c = to_cstring(root);
+        let mut hits_ptr: *mut FfiHit = ptr::null_mut();
+        let mut count: usize = 0;
+        let rc = unsafe {
+            seraph_store_search_subtree(
+                self.handle, root_c.as_ptr(),
+                query.as_ptr(), query.len(),
+                top_k, tau.unwrap_or(-1.0),
+                &mut hits_ptr, &mut count,
+            )
+        };
+        if rc != 0 { return Err(last_error()); }
+        Ok(take_hits(hits_ptr, count))
     }
 
     /// Promote an active frame to eigenframe.

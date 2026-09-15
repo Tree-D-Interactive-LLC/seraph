@@ -1436,6 +1436,253 @@ char* sid = seraph_store_add_seed(store, "physics", emb, dim, NULL);
 seraph_string_free(sid);
 ```
 
+### `seraph_store_get_seeds`
+
+The authored seed list — an append-only registry of `label -> frame_id`
+bindings held in a `_seraph_seeds:` System sentinel.
+
+A binding may name **any** frame, not only a Seed-status one, which is how an
+eigenframe the geometry grew gets a stable name. When no registry has ever been
+authored the list is derived from the store's Seed-status frames instead, so a
+store predating the registry still answers; use
+`seraph_store_seeds_are_authored` to tell the two apart.
+
+```c
+char* seraph_store_get_seeds(void* handle);
+```
+
+**Parameters**
+
+| Name | Type | Required | Description |
+|---|---|---|---|
+| `handle` | `void*` | yes | Store handle. |
+
+**Returns:** JSON array of `{"label","frame_id"}` in authored order (free with
+`seraph_string_free`), or `NULL` on error.
+
+**Errors:** `NULL` on a `NULL` handle.
+
+**Example**
+
+```c
+char* json = seraph_store_get_seeds(store);   // [{"label":"physics","frame_id":"01a0..."}]
+seraph_string_free(json);
+```
+
+### `seraph_store_seeds_are_authored`
+
+Whether the seed list comes from a registry sentinel rather than being derived
+from Seed-status frames. An authored **empty** registry is a real state and is
+authoritative — it does not fall back to the derived list.
+
+```c
+int seraph_store_seeds_are_authored(void* handle);
+```
+
+**Parameters**
+
+| Name | Type | Required | Description |
+|---|---|---|---|
+| `handle` | `void*` | yes | Store handle. |
+
+**Returns:** `1` if authored, `0` if derived, `-1` on error.
+
+### `seraph_store_resolve_seed`
+
+Resolve a seed label to its frame id. Labels are unique within a registry.
+
+```c
+char* seraph_store_resolve_seed(void* handle, const char* label);
+```
+
+**Parameters**
+
+| Name | Type | Required | Description |
+|---|---|---|---|
+| `handle` | `void*` | yes | Store handle. |
+| `label` | `const char*` | yes | Seed label to resolve. |
+
+**Returns:** Frame ID (free with `seraph_string_free`), or `NULL` if the label
+is not registered, or `NULL` on error.
+
+**Errors:** The export clears the error slot on entry and sets it only on
+failure, so an unregistered label returns `NULL` with `seraph_last_error()`
+still `NULL`. Check the error slot to tell "not found" from "failed".
+
+### `seraph_store_set_seeds`
+
+Replace the whole registry, appending a new snapshot sentinel. The full list is
+rewritten on every mutation rather than journalled as a delta, so a reader
+resolves the registry with one read of the last snapshot instead of folding the
+store's history.
+
+Removing a label removes it from the authored set **only** — it does not demote
+the frame, which keeps whatever status and geometric pull it already had.
+
+```c
+char* seraph_store_set_seeds(void* handle, const char* entries_json);
+```
+
+**Parameters**
+
+| Name | Type | Required | Description |
+|---|---|---|---|
+| `handle` | `void*` | yes | Store handle. |
+| `entries_json` | `const char*` | yes | JSON array of `{"label","frame_id"}`. |
+
+**Returns:** The snapshot sentinel's frame ID (free with `seraph_string_free`),
+or `NULL` on error.
+
+**Errors:** `NULL` on malformed JSON, an empty or duplicated label, a
+`frame_id` absent from the store, a sealed store, or a `NULL` handle.
+
+**Example**
+
+```c
+char* sid = seraph_store_set_seeds(store,
+    "[{\"label\":\"evidence\",\"frame_id\":\"01a0...\"}]");
+seraph_string_free(sid);
+```
+
+### `seraph_store_register_seed`
+
+Bind one label, appending a new snapshot. Rebinding an existing label updates it
+in place, preserving its authored position.
+
+```c
+char* seraph_store_register_seed(
+    void* handle,
+    const char* label,
+    const char* frame_id
+);
+```
+
+**Parameters**
+
+| Name | Type | Required | Description |
+|---|---|---|---|
+| `handle` | `void*` | yes | Store handle. |
+| `label` | `const char*` | yes | Label to bind. |
+| `frame_id` | `const char*` | yes | Frame to bind it to; must exist in the store. |
+
+**Returns:** The snapshot sentinel's frame ID (free with `seraph_string_free`),
+or `NULL` on error.
+
+**Errors:** `NULL` on an empty label, an unknown `frame_id`, a sealed store, or
+a `NULL` handle.
+
+### `seraph_store_unregister_seed`
+
+Drop a label from the authored set, appending a new snapshot. The frame it named
+is untouched.
+
+```c
+char* seraph_store_unregister_seed(void* handle, const char* label);
+```
+
+**Parameters**
+
+| Name | Type | Required | Description |
+|---|---|---|---|
+| `handle` | `void*` | yes | Store handle. |
+| `label` | `const char*` | yes | Label to drop. |
+
+**Returns:** The snapshot sentinel's frame ID (free with `seraph_string_free`),
+or `NULL` on error.
+
+**Errors:** `NULL` if the label is not registered, on a sealed store, or on a
+`NULL` handle.
+
+### `seraph_store_put_subtree`
+
+Ingest content into a named subtree: the parent is chosen from inside `root`'s
+parent-edge subtree instead of from the store at large.
+
+The region is asserted by the caller; the position inside it is still derived by
+the geometry, so lineage stays graded and depth stays real. There is no
+similarity floor — a placement is asserted, so no score refuses it.
+
+Similarity edges are chosen **globally**, exactly as `seraph_store_put` chooses
+them. Only the tree edge is overridden, so a placed frame remains reachable by
+ordinary search. The frame is stamped with `_placed_under` so a later
+`seraph_migrate_store` re-derives its position inside the same region rather
+than re-routing it.
+
+```c
+char* seraph_store_put_subtree(
+    void* handle,
+    const char* root,
+    const uint8_t* content, size_t content_len,
+    const float* embedding, size_t embedding_len,
+    const char* metadata_json
+);
+```
+
+**Parameters**
+
+| Name | Type | Required | Description |
+|---|---|---|---|
+| `handle` | `void*` | yes | Store handle. |
+| `root` | `const char*` | yes | Subtree root: a frame ID or a seed label. A frame ID wins if it resolves as one. |
+| `content` | `const uint8_t*` | yes | Content bytes. |
+| `content_len` | `size_t` | yes | Content length. |
+| `embedding` | `const float*` | yes | Embedding vector. |
+| `embedding_len` | `size_t` | yes | Vector length; must equal the store dimension. |
+| `metadata_json` | `const char*` | no | JSON metadata object, or `NULL`. A caller-supplied `_placed_under` is overwritten. |
+
+**Returns:** New frame ID (free with `seraph_string_free`), or `NULL` on error.
+
+**Errors:** `NULL` on an unknown root, dimension mismatch, sealed store, or
+`NULL` handle.
+
+**Example**
+
+```c
+char* fid = seraph_store_put_subtree(
+    store, "evidence", body, body_len, emb, dim, NULL);
+seraph_string_free(fid);
+```
+
+### `seraph_store_search_subtree`
+
+Search confined to a named subtree. Phase 1 is skipped entirely — the root is
+the entry point — and the traversal follows parent edges plus only those
+similarity edges whose target is inside the subtree.
+
+Ordinary `seraph_store_search` is unaffected and still reaches these frames.
+
+```c
+int seraph_store_search_subtree(
+    void* handle,
+    const char* root,
+    const float* query, size_t query_len,
+    size_t top_k,
+    float tau,
+    SeraphHit** out_hits,
+    size_t* out_count
+);
+```
+
+**Parameters**
+
+| Name | Type | Required | Description |
+|---|---|---|---|
+| `handle` | `void*` | yes | Store handle. |
+| `root` | `const char*` | yes | Subtree root: a frame ID or a seed label. |
+| `query` | `const float*` | yes | Query embedding. |
+| `query_len` | `size_t` | yes | Vector length. |
+| `top_k` | `size_t` | yes | Maximum results. |
+| `tau` | `float` | yes | Similarity threshold; pass a negative value to use the store's configured `tau_similarity`. |
+| `out_hits` | `SeraphHit**` | yes | Receives the hit array (free with `seraph_hits_free`). |
+| `out_count` | `size_t*` | yes | Receives the hit count. |
+
+**Returns:** `0` on success, `-1` on error.
+
+**Errors:** `-1` on an unknown root or a `NULL` handle.
+
+**Note:** Depth is bounded by `search_max_depth`; the subtree itself bounds the
+visit count.
+
 ### `seraph_store_promote`
 
 Promote an existing frame to eigenframe. Promotion is monotonic — eigenframes

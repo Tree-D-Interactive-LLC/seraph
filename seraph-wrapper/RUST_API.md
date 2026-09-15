@@ -567,6 +567,109 @@ Add a seed (geometric attractor) to a live store. Returns the seed frame's ID.
 pub fn add_seed(&mut self, label: &str, embedding: &[f32], metadata_json: Option<&str>) -> Result<String, Error>
 ```
 
+### `Store::get_seeds`
+
+The authored seed list as JSON — an array of `{label, frame_id}`, in authored
+order. The registry is an append-only sequence of snapshot sentinels; the last
+one wins.
+
+A binding may name **any** frame, not only a Seed-status one, which is how an
+eigenframe the geometry grew gets a stable name. When no registry has ever been
+authored the list is derived from the store's Seed-status frames instead — see
+`seeds_are_authored`.
+
+```rust
+pub fn get_seeds(&self) -> Result<String, Error>
+```
+
+### `Store::seeds_are_authored`
+
+Whether the seed list comes from a registry sentinel rather than being derived
+from Seed-status frames. An authored **empty** registry is a real state and is
+authoritative — it does not fall back to the derived list.
+
+```rust
+pub fn seeds_are_authored(&self) -> Result<bool, Error>
+```
+
+### `Store::resolve_seed`
+
+Resolve a seed label to its frame id. `Ok(None)` means the label is not
+registered, as distinct from `Err`.
+
+```rust
+pub fn resolve_seed(&self, label: &str) -> Result<Option<String>, Error>
+```
+
+### `Store::set_seeds`
+
+Replace the whole registry from a JSON array of `{label, frame_id}`, appending a
+new snapshot sentinel. Returns the sentinel's frame ID.
+
+The full list is rewritten on every mutation rather than journalled as a delta,
+so a reader resolves the registry with one read of the last snapshot instead of
+folding the store's history. Removing a label removes it from the authored set
+**only** — it does not demote the frame, which keeps whatever status and
+geometric pull it already had.
+
+Errors on an empty or duplicated label, or a `frame_id` absent from the store.
+
+```rust
+pub fn set_seeds(&mut self, entries_json: &str) -> Result<String, Error>
+```
+
+### `Store::register_seed`
+
+Bind one label, appending a new snapshot. Rebinding an existing label updates it
+in place, preserving its authored position. Returns the sentinel's frame ID.
+
+```rust
+pub fn register_seed(&mut self, label: &str, frame_id: &str) -> Result<String, Error>
+```
+
+### `Store::unregister_seed`
+
+Drop a label from the authored set, appending a new snapshot. The frame it named
+is untouched. Returns the sentinel's frame ID. Errors if the label is not
+registered.
+
+```rust
+pub fn unregister_seed(&mut self, label: &str) -> Result<String, Error>
+```
+
+### `Store::put_subtree`
+
+Ingest content into a named subtree: the parent is chosen from inside `root`'s
+parent-edge subtree instead of from the store at large. `root` is a frame ID or
+a seed label. Returns the new frame's ID.
+
+The region is asserted by the caller; the position inside it is still derived by
+the geometry, so lineage stays graded and depth stays real. There is no
+similarity floor — a placement is asserted, so no score refuses it.
+
+Similarity edges are chosen **globally**, exactly as `put` chooses them. Only
+the tree edge is overridden, so a placed frame remains reachable by ordinary
+`search`. The frame is stamped with `_placed_under` so a later migration
+re-derives its position inside the same region rather than re-routing it.
+
+```rust
+pub fn put_subtree(&mut self, root: &str, content: &[u8], embedding: &[f32], metadata_json: Option<&str>) -> Result<String, Error>
+```
+
+### `Store::search_subtree`
+
+Search confined to a named subtree. Phase 1 is skipped entirely — the root is
+the entry point — and the traversal follows parent edges plus only those
+similarity edges whose target is inside the subtree. `root` is a frame ID or a
+seed label; `tau` of `None` uses the store's configured `tau_similarity`.
+
+Ordinary `search` is unaffected and still reaches these frames. Depth is bounded
+by `search_max_depth`; the subtree itself bounds the visit count.
+
+```rust
+pub fn search_subtree(&self, root: &str, query: &[f32], top_k: usize, tau: Option<f32>) -> Result<Vec<Hit>, Error>
+```
+
 ### `Store::promote`
 
 Promote an existing active frame to eigenframe.

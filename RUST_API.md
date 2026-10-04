@@ -271,6 +271,35 @@ Flush buffered writes and re-enable per-write fsync.
 pub fn commit(&mut self) -> Result<(), Error>
 ```
 
+### `Store::commit_marker`
+
+Commit an application marker: a System sentinel with no geometric footprint
+(never an entry point, never a parent, never searched), durable in the log.
+`kind` becomes the content prefix `_{kind}:`; kinds the load path interprets
+(`promote`, `supersede`, `seal`, `seraph_*`) and the metadata keys it acts on
+(`_promote`, `_supersede`, `_seraph*`) are refused. Returns the marker's frame ID.
+
+```rust
+pub fn commit_marker(&mut self, kind: &str, metadata_json: &str) -> Result<String, Error>
+```
+
+**Parameters**
+
+| Name | Type | Description |
+|---|---|---|
+| `kind` | `&str` | Marker kind: non-empty, no `:`, no whitespace, not reserved. |
+| `metadata_json` | `&str` | JSON object (`"{}"` for none). |
+
+### `Store::markers_json`
+
+Markers of one kind in commit order, as a JSON array of
+`{"frame_id": "...", "metadata": {...}}`. `None` on a null handle; `"[]"` for an
+unknown kind.
+
+```rust
+pub fn markers_json(&self, kind: &str) -> Option<String>
+```
+
 ---
 
 ## Search
@@ -483,7 +512,8 @@ pub fn get_metadata(&self, frame_id: &str) -> Option<String>
 
 ### `Store::get_frame_json`
 
-Get a frame as a JSON object string with all properties.
+Get a frame as a JSON object string with all properties (including `codes_hex`,
+the packed 4-bit codes behind `content_set_root`; empty on pre-v3 frames).
 
 ```rust
 pub fn get_frame_json(&self, frame_id: &str) -> Option<String>
@@ -504,6 +534,28 @@ number of floats written.
 
 ```rust
 pub fn get_embedding_into(&self, frame_id: &str, buf: &mut [f32]) -> Result<Option<usize>, Error>
+```
+
+### `Store::quantize_query`
+
+The query the engine actually walks with: `embedding` after a round trip
+through the store's write quantizer. On a v3 store this is what every scoring
+path sees, so reproduce scores outside the engine from this vector, not the
+raw one. Identity on pre-v3 stores.
+
+```rust
+pub fn quantize_query(&self, embedding: &[f32]) -> Result<Vec<f32>, Error>
+```
+
+### `Store::encode_codes`
+
+The packed 4-bit codes the store would persist for `embedding` — the bytes
+`codes_hex` carries and `content_set_root` hashes — so a caller can build a
+leaf for content it has not ingested. Empty on a pre-v3 store or a dimension
+mismatch.
+
+```rust
+pub fn encode_codes(&self, embedding: &[f32]) -> Result<Vec<u8>, Error>
 ```
 
 ### `Store::borrow_frame`
@@ -648,7 +700,7 @@ the geometry, so lineage stays graded and depth stays real. There is no
 similarity floor — a placement is asserted, so no score refuses it.
 
 Similarity edges are chosen **globally**, exactly as `put` chooses them. Only
-the tree edge is overridden, so a placed frame remains reachable by ordinary
+the parent edge is overridden, so a placed frame remains reachable by ordinary
 `search`. The frame is stamped with `_placed_under` so a later migration
 re-derives its position inside the same region rather than re-routing it.
 
@@ -1220,6 +1272,19 @@ The genesis attestation, as JSON.
 
 ```rust
 pub fn genesis_attestation_json(&self) -> Option<String>
+```
+
+### `Store::content_set_root`
+
+Order-free commitment to the store's retrievable content: 64 hex characters
+over the sorted multiset of `sha256(content_hash || codes)` leaves under the
+header `"seraph-content-set/v1|<model_id>|<dim>|<n>"`. Same content under the
+same model gives the same root regardless of commit order, eigenframe set or
+graph. It ranges over every frame search can return (`Active`, `Eigenframe`,
+`Seed`, `Genesis`); System markers, redirects and superseded frames are excluded.
+
+```rust
+pub fn content_set_root(&self) -> Result<String, Error>
 ```
 
 ---

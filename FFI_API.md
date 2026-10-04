@@ -742,6 +742,48 @@ seraph_string_free(ids);
 seraph_store_sync(store);
 ```
 
+### `seraph_store_commit_marker`
+
+Commit an application marker: a System sentinel with a zero embedding under
+the system root. It has no geometric footprint — never an entry point, never a
+parent, never returned by search — but it is durable in the frame log like any
+other frame. Use it for application records that belong with the store (a fault
+ledger, a run manifest, a review note). `kind` becomes the content prefix
+`_{kind}:` and is echoed in the metadata as `_marker`.
+
+```c
+char* seraph_store_commit_marker(void* handle, const char* kind, const char* metadata_json);
+```
+
+**Parameters**
+
+| Name | Type | Required | Description |
+|---|---|---|---|
+| `handle` | `void*` | yes | Store handle. |
+| `kind` | `const char*` | yes | Marker kind. Non-empty, no `:` and no whitespace. Kinds the load path interprets (`promote`, `supersede`, `seal`, `seraph_seeds`, `seraph_warp_cal`, anything starting `seraph`; case-insensitive, with or without a leading `_`) are refused. |
+| `metadata_json` | `const char*` | no | JSON **object**; `NULL` or empty means none. Keys the load path acts on (`_promote`, `_supersede`, any `_seraph*`) are refused, so a marker can never forge a promotion, a supersede or a registry on reopen. |
+
+**Returns:** The marker's frame ID (free with `seraph_string_free`), or `NULL` on error.
+
+**Errors:** `NULL` if `kind` is reserved or invalid, `metadata_json` is not a JSON object or carries a load-path key, the store is sealed, or the handle is `NULL` (see `seraph_last_error()`).
+
+### `seraph_store_markers`
+
+Markers of one kind, in commit order.
+
+```c
+char* seraph_store_markers(void* handle, const char* kind);
+```
+
+**Parameters**
+
+| Name | Type | Required | Description |
+|---|---|---|---|
+| `handle` | `void*` | yes | Store handle. |
+| `kind` | `const char*` | yes | The kind passed to `seraph_store_commit_marker`. |
+
+**Returns:** JSON array of `{"frame_id": "...", "metadata": {...}}` (free with `seraph_string_free`); `[]` for an unknown kind; `NULL` on error.
+
 ---
 
 ## Search
@@ -1055,7 +1097,7 @@ char* seraph_store_get_frame(void* handle, const char* frame_id);
 
 **Errors:** `NULL` if the frame does not exist or the handle is `NULL`.
 
-**Response:** [PLACEHOLDER: frame JSON shape — id, parent_id, status, in_degree, timestamp, metadata, …]
+**Response:** JSON object with `id`, `parent_id`, `status`, `content_b64`, `embedding`, `metadata`, `watermark_hex`, `content_hash_hex`, `codes_hex` (the packed 4-bit codes — the canonical persisted embedding on a v3 store and the bytes `seraph_store_content_set_root` hashes; empty on pre-v3 frames), `in_degree`, `model_id`, `timestamp`, `customer_uuid_hex`, `writer_signature_hex`, `marking_bytes_hex`, `status_ref`, `status_sources`.
 
 **Example**
 
@@ -1160,6 +1202,61 @@ int seraph_store_get_embedding_into(
 float buf[1024]; size_t written = 0;
 seraph_store_get_embedding_into(store, fid, buf, 1024, &written);
 ```
+
+### `seraph_store_quantize_query`
+
+The query the engine actually walks with: `embedding` after a round trip
+through the store's write quantizer. On a v3 store this is what every scoring
+path sees, so reproduce scores outside the engine from this vector, not the raw
+one. Identity on pre-v3 stores.
+
+```c
+int seraph_store_quantize_query(
+    void* handle, const float* embedding, size_t embedding_len,
+    float** out_query, size_t* out_dim
+);
+```
+
+**Parameters**
+
+| Name | Type | Required | Description |
+|---|---|---|---|
+| `handle` | `void*` | yes | Store handle. |
+| `embedding` | `const float*` | yes | Query embedding, length `seraph_store_dim`. |
+| `embedding_len` | `size_t` | yes | Vector length. |
+| `out_query` | `float**` | yes | Out: freshly allocated walk query (free with `seraph_floats_free`). |
+| `out_dim` | `size_t*` | yes | Out: its length. |
+
+**Returns:** `0` on success, `-1` on error.
+
+**Errors:** `-1` if the handle or an out pointer is `NULL`.
+
+### `seraph_store_encode_codes`
+
+The packed 4-bit codes the store would persist for `embedding` — the bytes
+`codes_hex` carries in the frame JSON and `seraph_store_content_set_root`
+hashes — so a caller can build a leaf for content it has not ingested.
+
+```c
+int seraph_store_encode_codes(
+    void* handle, const float* embedding, size_t embedding_len,
+    uint8_t** out_codes, size_t* out_len
+);
+```
+
+**Parameters**
+
+| Name | Type | Required | Description |
+|---|---|---|---|
+| `handle` | `void*` | yes | Store handle. |
+| `embedding` | `const float*` | yes | Embedding, length `seraph_store_dim`. |
+| `embedding_len` | `size_t` | yes | Vector length. |
+| `out_codes` | `uint8_t**` | yes | Out: freshly allocated codes (free with `seraph_bytes_free`); `NULL` with `out_len == 0` on a pre-v3 store or a dimension mismatch. |
+| `out_len` | `size_t*` | yes | Out: byte length. |
+
+**Returns:** `0` on success, `-1` on error.
+
+**Errors:** `-1` if the handle or an out pointer is `NULL`.
 
 ### `seraph_store_get_metadata`
 
@@ -1603,7 +1700,7 @@ the geometry, so lineage stays graded and depth stays real. There is no
 similarity floor — a placement is asserted, so no score refuses it.
 
 Similarity edges are chosen **globally**, exactly as `seraph_store_put` chooses
-them. Only the tree edge is overridden, so a placed frame remains reachable by
+them. Only the parent edge is overridden, so a placed frame remains reachable by
 ordinary search. The frame is stamped with `_placed_under` so a later
 `seraph_migrate_store` re-derives its position inside the same region rather
 than re-routing it.
@@ -2845,6 +2942,33 @@ char* seraph_store_verify_attestation(void* handle);
 char* json = seraph_store_verify_attestation(store);
 seraph_string_free(json);
 ```
+
+### `seraph_store_content_set_root`
+
+Order-free commitment to the store's retrievable content. Leaf =
+`sha256(content_hash || codes)` per active-content frame (pre-v3 frames use
+their packed fine quant); root =
+`sha256("seraph-content-set/v1|<model_id>|<dim>|<n>" || sorted leaves)`. Two
+stores holding the same content under the same model produce the same root
+regardless of commit order, eigenframe set or graph — it commits to exactly
+what retrieval is a function of at a reach-complete `tau`. It ranges over every
+frame search can return (`Active`, `Eigenframe`, `Seed`, `Genesis`); System
+markers, redirects and superseded frames are excluded. Recomputable from the
+frame log alone.
+
+```c
+char* seraph_store_content_set_root(void* handle);
+```
+
+**Parameters**
+
+| Name | Type | Required | Description |
+|---|---|---|---|
+| `handle` | `void*` | yes | Store handle. |
+
+**Returns:** 64 hex characters (free with `seraph_string_free`), or `NULL` on error.
+
+**Errors:** `NULL` if the handle is `NULL`.
 
 ### `seraph_store_genesis_seed`
 

@@ -453,6 +453,49 @@ store.supersede(frame_id) -> str
 
 **Raises:** `RuntimeError` if the frame is missing, consolidation-exempt, or the store is closed.
 
+### `store.commit_marker(kind, metadata_json="{}")`
+
+Commit an application marker: a System sentinel with a zero embedding, parented
+under the system root. It has no geometric footprint — it is never an entry
+point, never a parent, never returned by search — but it is durable in the
+frame log like any other frame. Use it for application records that belong
+with the store (a fault ledger, a run manifest, a review note) rather than
+beside it. `kind` becomes the content prefix `_{kind}:` and is echoed in the
+metadata as `_marker`.
+
+```python
+store.commit_marker(kind, metadata_json="{}") -> str
+```
+
+**Parameters**
+
+| Name | Type | Required | Default | Description |
+|---|---|---|---|---|
+| `kind` | `str` | yes | -- | Marker kind. Non-empty, no `:` and no whitespace. The kinds the load path interprets (`promote`, `supersede`, `seal`, `seraph_seeds`, `seraph_warp_cal`, anything starting `seraph`, case-insensitive, with or without a leading `_`) are refused. |
+| `metadata_json` | `str` | no | `"{}"` | JSON **object**. Keys the load path acts on (`_promote`, `_supersede`, any `_seraph*`) are refused, so a marker can never forge a promotion, a supersede or a registry on reopen. |
+
+**Returns:** `str` — the marker's frame ID.
+
+**Raises:** `ValueError` if `metadata_json` is not valid JSON; `RuntimeError` on a reserved kind, an invalid kind, a load-path metadata key, a non-object payload, a sealed store, or a closed store.
+
+### `store.markers(kind)`
+
+Markers of one kind, in commit order.
+
+```python
+store.markers(kind) -> list[tuple[str, str]]
+```
+
+**Parameters**
+
+| Name | Type | Required | Default | Description |
+|---|---|---|---|---|
+| `kind` | `str` | yes | -- | The kind passed to `commit_marker`. |
+
+**Returns:** `list[tuple[str, str]]` — `(frame_id, metadata_json)` pairs; empty for an unknown kind or a store with no system root.
+
+**Raises:** `RuntimeError` if the store is closed.
+
 ---
 
 ## Search
@@ -1121,7 +1164,7 @@ the geometry, so lineage stays graded and depth stays real. There is no
 similarity floor — a placement is asserted, so no score refuses it.
 
 Similarity edges are chosen **globally**, exactly as `put()` chooses them. Only
-the tree edge is overridden, so a placed frame remains reachable by ordinary
+the parent edge is overridden, so a placed frame remains reachable by ordinary
 `search()`. The frame is stamped with `_placed_under` so `migrate_store()`
 re-derives its position inside the same region rather than re-routing it.
 
@@ -2193,6 +2236,28 @@ store.verify_attestation(public_key_resolver=None, anchor_verifier=None, verify_
 
 **Raises:** `RuntimeError` if the store is closed.
 
+### `store.content_set_root()`
+
+Order-free commitment to the store's retrievable content. Leaf =
+`sha256(content_hash || codes)` per active-content frame (the packed 4-bit
+codes are the canonical persisted embedding on a v3 store; pre-v3 frames use
+their packed fine quant); root =
+`sha256("seraph-content-set/v1|<model_id>|<dim>|<n>" || sorted leaves)`.
+
+Two stores holding the same content under the same model produce the same root
+regardless of commit order, eigenframe set or graph — it commits to exactly
+what retrieval is a function of at a reach-complete `tau`. It ranges over every
+frame search can return (`Active`, `Eigenframe`, `Seed`, `Genesis` — the
+`is_active_content()` set); System markers, redirects and superseded frames are
+excluded. Recomputable from the frame log alone; `tools/attest_retrieval.py
+commit` cross-checks it independently.
+
+*No parameters.*
+
+**Returns:** `str` — 64 hex characters.
+
+**Raises:** `RuntimeError` if the store is closed.
+
 ### `store.genesis_seed()`
 
 Raw genesis seed bytes (v2-attested stores only).
@@ -2455,6 +2520,48 @@ store.encode_batch(texts) -> list[list[float]]
 
 **Raises:** `RuntimeError` if encoder init/encode fails or the store is closed.
 
+### `store.quantize_query(embedding)`
+
+The query the engine actually walks with: `embedding` after a round trip
+through the store's write quantizer. On a v3 store this is what every scoring
+path sees, so a caller reproducing scores outside the engine should use it
+instead of the raw vector. Identity on pre-v3 stores.
+
+```python
+store.quantize_query(embedding) -> list[float]
+```
+
+**Parameters**
+
+| Name | Type | Required | Default | Description |
+|---|---|---|---|---|
+| `embedding` | `list[float]` | yes | -- | Query embedding, length `store.dim()`. |
+
+**Returns:** `list[float]`.
+
+**Raises:** `RuntimeError` if the store is closed.
+
+### `store.encode_codes(embedding)`
+
+The packed 4-bit codes the store would persist for `embedding` — the bytes
+`Frame.codes` would carry if this vector were ingested, and the bytes
+`content_set_root` hashes. Lets a caller build a leaf for content it has not
+ingested.
+
+```python
+store.encode_codes(embedding) -> bytes
+```
+
+**Parameters**
+
+| Name | Type | Required | Default | Description |
+|---|---|---|---|---|
+| `embedding` | `list[float]` | yes | -- | Embedding, length `store.dim()`. |
+
+**Returns:** `bytes` — empty on a pre-v3 store or a dimension mismatch.
+
+**Raises:** `RuntimeError` if the store is closed.
+
 ### `Encoder(model_dir)`
 
 Standalone pure-Rust encoder from a local model directory.
@@ -2577,7 +2684,7 @@ All types below are registered PyO3 classes (verified against `py.rs` getters).
 
 | Type | Key Fields / Members |
 |------|------|
-| `Frame` | `.id`, `.parent_id`, `.status`, `.content`, `.embedding`, `.metadata` (dict), `.metadata_json` (str), `.watermark`, `.content_hash`, `.in_degree`, `.model_id`, `.timestamp`, `.status_ref`, `.status_sources`, `.customer_uuid`, `.writer_signature`, `.snippet`; methods `.is_active_content()`, `.is_consolidation_exempt()`, `.is_eigenframe()`, `.is_redirect()` |
+| `Frame` | `.id`, `.parent_id`, `.status`, `.content`, `.embedding`, `.metadata` (dict), `.metadata_json` (str), `.watermark`, `.content_hash`, `.codes` (bytes; packed 4-bit codes, empty on pre-v3 frames), `.in_degree`, `.model_id`, `.timestamp`, `.status_ref`, `.status_sources`, `.customer_uuid`, `.writer_signature`, `.snippet`; methods `.is_active_content()`, `.is_consolidation_exempt()`, `.is_eigenframe()`, `.is_redirect()` |
 | `Hit` | `.frame_id`, `.score`, `.confidence`, `.path_length`, `.snippet`, `.content`, `.frame` |
 | `TraceEntry` | `.frame_id`, `.depth`, `.score`, `.visit_order`, `.source`, `.parent_id` |
 | `Chain` | `.frames`, `.frame_ids`, `.primitive`, `.segments`, `.coherence` |

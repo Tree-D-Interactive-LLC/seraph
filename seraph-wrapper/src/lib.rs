@@ -243,6 +243,19 @@ extern "C" {
     fn seraph_store_similarity_stats(handle: *mut c_void) -> *mut c_char;
     fn seraph_store_sim_neighbors(handle: *mut c_void, frame_id: *const c_char) -> *mut c_char;
     fn seraph_store_committed_sim_edges(handle: *mut c_void, frame_id: *const c_char) -> *mut c_char;
+
+    // Content-set root, walk query, codes, application markers
+    fn seraph_store_content_set_root(handle: *mut c_void) -> *mut c_char;
+    fn seraph_store_quantize_query(
+        handle: *mut c_void, embedding: *const f32, embedding_len: usize,
+        out_query: *mut *mut f32, out_dim: *mut usize,
+    ) -> i32;
+    fn seraph_store_encode_codes(
+        handle: *mut c_void, embedding: *const f32, embedding_len: usize,
+        out_codes: *mut *mut u8, out_len: *mut usize,
+    ) -> i32;
+    fn seraph_store_commit_marker(handle: *mut c_void, kind: *const c_char, metadata_json: *const c_char) -> *mut c_char;
+    fn seraph_store_markers(handle: *mut c_void, kind: *const c_char) -> *mut c_char;
     fn seraph_store_resolve_tau(handle: *mut c_void) -> f32;
     fn seraph_store_resolve_tau_spec(handle: *mut c_void, mode: i32, value: f32) -> f32;
     fn seraph_store_drift_report(handle: *mut c_void, window: usize, threshold: f32) -> *mut c_char;
@@ -1157,6 +1170,26 @@ impl Store {
         if id.is_null() { Err(last_error()) } else { Ok(unsafe { take_cstring(id) }) }
     }
 
+    /// Commit an application marker: a System sentinel with no geometric
+    /// footprint (never an entry point, never a parent, never searched),
+    /// durable in the log. `metadata_json` must be a JSON object (`"{}"` for
+    /// none). Kinds the load path interprets and the metadata keys it acts on
+    /// are refused. Returns the marker's frame ID.
+    pub fn commit_marker(&mut self, kind: &str, metadata_json: &str) -> Result<String, Error> {
+        let kind_c = to_cstring(kind);
+        let meta_c = to_cstring(metadata_json);
+        let id = unsafe { seraph_store_commit_marker(self.handle, kind_c.as_ptr(), meta_c.as_ptr()) };
+        if id.is_null() { Err(last_error()) } else { Ok(unsafe { take_cstring(id) }) }
+    }
+
+    /// Markers of `kind` in commit order, as a JSON array of
+    /// `{"frame_id", "metadata"}`.
+    pub fn markers_json(&self, kind: &str) -> Option<String> {
+        let kind_c = std::ffi::CString::new(kind).ok()?;
+        let p = unsafe { seraph_store_markers(self.handle, kind_c.as_ptr()) };
+        if p.is_null() { None } else { Some(unsafe { take_cstring(p) }) }
+    }
+
     /// Flush pending writes to disk.
     pub fn sync(&mut self) -> Result<(), Error> {
         let rc = unsafe { seraph_store_sync(self.handle) };
@@ -1321,7 +1354,7 @@ impl Store {
     ///
     /// `root` is a frame id or a seed label. Similarity edges are still chosen
     /// globally, so a placed frame stays reachable by ordinary
-    /// [`search`](Self::search) — only the tree edge is overridden. The frame
+    /// [`search`](Self::search) — only the parent edge is overridden. The frame
     /// is stamped so a later migration re-derives its position inside the same
     /// region rather than re-routing it.
     pub fn put_subtree(
@@ -1527,6 +1560,36 @@ impl Store {
             1 => Ok(None),
             _ => Err(last_error()),
         }
+    }
+
+    /// The query the engine walks with: `embedding` after a round trip
+    /// through the store's write quantizer (identity on pre-v3 stores).
+    pub fn quantize_query(&self, embedding: &[f32]) -> Result<Vec<f32>, Error> {
+        let mut out_ptr: *mut f32 = ptr::null_mut();
+        let mut out_dim: usize = 0;
+        let rc = unsafe {
+            seraph_store_quantize_query(self.handle, embedding.as_ptr(), embedding.len(), &mut out_ptr, &mut out_dim)
+        };
+        if rc != 0 { return Err(last_error()); }
+        let q = unsafe { std::slice::from_raw_parts(out_ptr, out_dim) }.to_vec();
+        unsafe { seraph_floats_free(out_ptr, out_dim) };
+        Ok(q)
+    }
+
+    /// The packed 4-bit codes the store would persist for `embedding` — the
+    /// bytes behind `codes_hex` in the frame JSON. Empty on a pre-v3 store or
+    /// a dimension mismatch.
+    pub fn encode_codes(&self, embedding: &[f32]) -> Result<Vec<u8>, Error> {
+        let mut out_ptr: *mut u8 = ptr::null_mut();
+        let mut out_len: usize = 0;
+        let rc = unsafe {
+            seraph_store_encode_codes(self.handle, embedding.as_ptr(), embedding.len(), &mut out_ptr, &mut out_len)
+        };
+        if rc != 0 { return Err(last_error()); }
+        if out_ptr.is_null() || out_len == 0 { return Ok(Vec::new()); }
+        let codes = unsafe { std::slice::from_raw_parts(out_ptr, out_len) }.to_vec();
+        unsafe { seraph_bytes_free(out_ptr, out_len) };
+        Ok(codes)
     }
 
     // ---------------------------------------------------------------- //
@@ -1876,6 +1939,15 @@ impl Store {
     pub fn genesis_attestation_json(&self) -> Option<String> {
         let p = unsafe { seraph_store_genesis_attestation(self.handle) };
         if p.is_null() { None } else { Some(unsafe { take_cstring(p) }) }
+    }
+
+    /// Order-free commitment to the store's retrievable content: 64 hex
+    /// chars over the sorted multiset of `sha256(content_hash || codes)`
+    /// leaves (scheme `seraph-content-set/v1`). Same content under the same
+    /// model gives the same root regardless of commit order or graph.
+    pub fn content_set_root(&self) -> Result<String, Error> {
+        let p = unsafe { seraph_store_content_set_root(self.handle) };
+        if p.is_null() { Err(last_error()) } else { Ok(unsafe { take_cstring(p) }) }
     }
 
     // ---------------------------------------------------------------- //

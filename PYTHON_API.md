@@ -69,23 +69,25 @@ These rules hold for all functions unless an entry says otherwise:
 3. [Configuration](#configuration)
 4. [Ingestion](#ingestion)
 5. [Search](#search)
-6. [Frame Access](#frame-access)
-7. [Seeds & Promotion](#seeds--promotion)
-8. [Traversal & Chains](#traversal--chains)
-9. [Neighborhood](#neighborhood)
-10. [Warp (Steering)](#warp-steering)
-11. [Analysis & Metrics](#analysis--metrics)
-12. [Intelligence](#intelligence)
-13. [Consolidation](#consolidation)
-14. [Typed Structural Edges](#typed-structural-edges)
-15. [Snapshot / Temporal](#snapshot--temporal)
-16. [Provenance & Sealing](#provenance--sealing)
-17. [Anchoring](#anchoring)
-18. [Events & Subscriptions](#events--subscriptions)
-19. [Encoding](#encoding)
-20. [Batch Operations](#batch-operations)
-21. [Types Reference](#types-reference)
-22. [Enums Reference](#enums-reference)
+6. [Federation](#federation)
+7. [Frame Access](#frame-access)
+8. [Seeds & Promotion](#seeds--promotion)
+9. [Traversal & Chains](#traversal--chains)
+10. [Neighborhood](#neighborhood)
+11. [Warp (Steering)](#warp-steering)
+12. [Analysis & Metrics](#analysis--metrics)
+13. [Intelligence](#intelligence)
+14. [Consolidation](#consolidation)
+15. [Typed Structural Edges](#typed-structural-edges)
+16. [Snapshot / Temporal](#snapshot--temporal)
+17. [Provenance & Sealing](#provenance--sealing)
+18. [Anchoring](#anchoring)
+19. [Events & Subscriptions](#events--subscriptions)
+20. [Encoding](#encoding)
+21. [Batch Operations](#batch-operations)
+22. [Value & Result Type Methods](#value--result-type-methods)
+23. [Types Reference](#types-reference)
+24. [Enums Reference](#enums-reference)
 
 ---
 
@@ -93,7 +95,7 @@ These rules hold for all functions unless an entry says otherwise:
 
 ### `SeraphStore.create(path, config, seed_data=[], writer_seed=None)`
 
-Create a new store on disk (static method).
+Create a new store on disk.
 
 ```python
 SeraphStore.create(path, config, seed_data=[], writer_seed=None) -> SeraphStore
@@ -105,7 +107,7 @@ SeraphStore.create(path, config, seed_data=[], writer_seed=None) -> SeraphStore
 |---|---|---|---|---|
 | `path` | `str` | yes | -- | Filesystem path for the `.sfg` file. |
 | `config` | `StoreConfig` | yes | -- | Store configuration. |
-| `seed_data` | `list[tuple[str, list[float]]]` | no | `[]` | Initial seeds as `(label, embedding)` tuples. |
+| `seed_data` | `list[tuple[str, list[float]]]` | no | `[]` | Initial seeds as (label, embedding) tuples. |
 | `writer_seed` | `bytes \| None` | no | `None` | 32-byte Ed25519 private seed supplied by the application (ADR-0001). When provided, the store is secure and every frame is signed by this key; the seed never leaves the caller. |
 
 **Returns:** `SeraphStore` — handle to the new store.
@@ -121,7 +123,7 @@ store = seraph.SeraphStore.create("./knowledge.sfg", config)
 
 ### `SeraphStore.open(path, writer_seed=None)`
 
-Open an existing unencrypted store (static method).
+Open an existing unencrypted store.
 
 ```python
 SeraphStore.open(path, writer_seed=None) -> SeraphStore
@@ -146,7 +148,7 @@ store = seraph.SeraphStore.open("./knowledge.sfg")
 
 ### `SeraphStore.open_encrypted(path, passphrase)`
 
-Open an encrypted store with a passphrase (static method).
+Open an encrypted store with a passphrase.
 
 ```python
 SeraphStore.open_encrypted(path, passphrase) -> SeraphStore
@@ -165,7 +167,11 @@ SeraphStore.open_encrypted(path, passphrase) -> SeraphStore
 
 ### `store.close()`
 
-Close the store and flush all pending writes. The store object raises `RuntimeError` on any subsequent operation.
+Close the store and flush all pending writes. The store object raises on any subsequent operation.
+
+```python
+store.close() -> None
+```
 
 *No parameters.*
 
@@ -175,7 +181,11 @@ Close the store and flush all pending writes. The store object raises `RuntimeEr
 
 ### `store.flush()`
 
-Flush all buffered writes to disk without closing. (`#[pyo3(name = "flush")]`.)
+Flush pending writes to disk without closing (`flush` on the Python surface).
+
+```python
+store.flush() -> None
+```
 
 *No parameters.*
 
@@ -185,7 +195,11 @@ Flush all buffered writes to disk without closing. (`#[pyo3(name = "flush")]`.)
 
 ### `store.set_fast_mode(enabled)`
 
-Enable/disable fast ingest mode (skip per-frame WAL + fsync). (`#[pyo3(name = "set_fast_mode")]`.)
+Enable or disable fast ingest mode, which skips the per-frame WAL and fsync. Disabling flushes to disk.
+
+```python
+store.set_fast_mode(enabled) -> None
+```
 
 **Parameters**
 
@@ -199,17 +213,273 @@ Enable/disable fast ingest mode (skip per-frame WAL + fsync). (`#[pyo3(name = "s
 
 ### `store.set_search_visit_cap_multiplier(m)`
 
-Set the Phase-2 BFS visit-cap multiplier at runtime (`max_visited = top_k * m`, default 5). Higher values widen the search frontier at minimal latency cost.
+Legacy visit budget for a search as a multiple of `top_k`, used only when the absolute budget (`set_search_max_visits`) is `0`. Default `20`. Runtime only.
+
+```python
+store.set_search_visit_cap_multiplier(m) -> None
+```
 
 **Parameters**
 
 | Name | Type | Required | Default | Description |
 |---|---|---|---|---|
-| `m` | `int` | yes | -- | New visit-cap multiplier. |
+| `m` | `int` | yes | -- | Multiple of `top_k` for the legacy visit budget. |
 
 **Returns:** `None`.
 
 **Raises:** `RuntimeError` if the store is closed.
+
+### `store.set_seed_term(beta)`
+
+Weight of the seed term in parent selection. When the store has seeds, a new frame's parent is chosen by its similarity to the candidate plus `beta` times its similarity to the candidate's seed, which settles near-ties between seed regions. It affects the parent only; the stored embedding, the similarity edges and search results are unchanged. Default `0.6`; `0` disables it. Per-frame opt-out: `seed_term=False` on the put calls. Runtime only, not persisted.
+
+```python
+store.set_seed_term(beta) -> None
+```
+
+**Parameters**
+
+| Name | Type | Required | Default | Description |
+|---|---|---|---|---|
+| `beta` | `float` | yes | -- | Term weight (`>= 0`; `0` disables). |
+
+**Returns:** `None`.
+
+**Raises:** `RuntimeError` if the store is closed.
+
+### `store.seed_term()`
+
+Current weight of the commit-time seed term (see `set_seed_term`).
+
+```python
+store.seed_term() -> float
+```
+
+*No parameters.*
+
+**Returns:** `float`.
+
+**Raises:** `RuntimeError` if the store is closed.
+
+### `store.set_search_ceiling_slack(slack)`
+
+How far past the current top-k a search keeps looking before it stops, as a cosine distance below the k-th best score. Smaller values stop sooner; larger values find more on weak-match queries at more cost. Default `0.05`; `0.10` is the completeness setting. `0` uses the multiplicative margin instead (`set_search_ceiling_margin`). Runtime only, not persisted.
+
+```python
+store.set_search_ceiling_slack(slack) -> None
+```
+
+**Parameters**
+
+| Name | Type | Required | Default | Description |
+|---|---|---|---|---|
+| `slack` | `float` | yes | -- | Cosine slack below the k-th best; `0` = multiplicative margin. |
+
+**Returns:** `None`.
+
+**Raises:** `RuntimeError` if the store is closed.
+
+### `store.set_door_index(on)`
+
+Use the door index for entry-point selection: an index over the eigenframes that replaces the full scan once the store has `door_index_min` of them (default `4096`). Default on. Entry selection is then approximate to the index's accuracy (see `set_door_index_ef`); replay and as-of reads always use the exact scan. Turning it on builds the index at once; off drops it. Runtime only, not persisted.
+
+```python
+store.set_door_index(on) -> None
+```
+
+**Parameters**
+
+| Name | Type | Required | Default | Description |
+|---|---|---|---|---|
+| `on` | `bool` | yes | -- | `True` to pick entry points through the door index. |
+
+**Returns:** `None`.
+
+**Raises:** `RuntimeError` if the store is closed.
+
+### `store.set_door_index_ef(ef)`
+
+Candidates the door index examines per query. Higher is closer to the exact scan at more cost per query. Default `128`. Runtime only, not persisted.
+
+```python
+store.set_door_index_ef(ef) -> None
+```
+
+**Parameters**
+
+| Name | Type | Required | Default | Description |
+|---|---|---|---|---|
+| `ef` | `int` | yes | -- | Candidates per query (at least the entry scan's 64). |
+
+**Returns:** `None`.
+
+**Raises:** `RuntimeError` if the store is closed.
+
+### `store.door_index_status()`
+
+Whether entry-point selection currently runs through the door index, and how many eigenframes it holds.
+
+```python
+store.door_index_status() -> tuple[bool, int]
+```
+
+*No parameters.*
+
+**Returns:** `tuple[bool, int]` — (ready, nodes).
+
+**Raises:** `RuntimeError` if the store is closed.
+
+### `store.vector_precision()`
+
+The precision each frame's vector is stored at, fixed at create (`StoreConfig(vector_precision=...)`): `"codes4"` (4-bit codes, the default), `"fp32"`, `"fp16"`, `"bf16"` or `"fp64"`. Stores below format 5 report `"codes4"`.
+
+```python
+store.vector_precision() -> str
+```
+
+*No parameters.*
+
+**Returns:** `str`.
+
+**Raises:** `RuntimeError` if the store is closed.
+
+### `store.resident_precision()`
+
+The precision search scores from: `"fp32"`, `"fp16"`, `"bf16"` or `"frame"` (no resident copy). The default is set at create (`StoreConfig(resident_precision=...)`) or derived from the vector precision when unset; `set_resident_precision` changes it at runtime.
+
+```python
+store.resident_precision() -> str
+```
+
+*No parameters.*
+
+**Returns:** `str`.
+
+**Raises:** `RuntimeError` if the store is closed.
+
+### `store.set_resident_precision(name)`
+
+Change the precision search scores from and rebuild the resident copy at once. `"fp16"` and `"bf16"` halve its memory; `"frame"` keeps no resident copy, at some cost per search. Runtime only; the store's default is the one set at create.
+
+```python
+store.set_resident_precision(name) -> None
+```
+
+**Parameters**
+
+| Name | Type | Required | Default | Description |
+|---|---|---|---|---|
+| `name` | `str` | yes | -- | `"fp32"`, `"fp16"`, `"bf16"` or `"frame"`. |
+
+**Returns:** `None`.
+
+**Raises:** `ValueError` for an unknown name; `RuntimeError` for a reserved one or if the store is closed.
+
+### `store.set_search_ceiling_margin(m)`
+
+Multiplicative stop line for search, used only when the slack (`set_search_ceiling_slack`) is `0`: search stops once nothing left can score above `m` times the k-th best. Default `0.85`. Runtime only, not persisted.
+
+```python
+store.set_search_ceiling_margin(m) -> None
+```
+
+**Parameters**
+
+| Name | Type | Required | Default | Description |
+|---|---|---|---|---|
+| `m` | `float` | yes | -- | Fraction of the k-th best; `1.0` is the tight stop. |
+
+**Returns:** `None`.
+
+**Raises:** `RuntimeError` if the store is closed.
+
+### `store.set_commit_ceiling_margin(m)`
+
+Stop line of the walk that picks a new frame's parent and similarity edges, as a fraction of the best score it holds. Lower values look further for a parent and cost ingest time; higher values ingest faster with slightly worse placement. Default `0.85`. Runtime only, not persisted.
+
+```python
+store.set_commit_ceiling_margin(m) -> None
+```
+
+**Parameters**
+
+| Name | Type | Required | Default | Description |
+|---|---|---|---|---|
+| `m` | `float` | yes | -- | Ceiling slack; `1.0` is the tight stop. |
+
+**Returns:** `None`.
+
+**Raises:** `RuntimeError` if the store is closed.
+
+### `store.commit_ceiling_margin()`
+
+Current stop line of the commit walk (see `set_commit_ceiling_margin`).
+
+```python
+store.commit_ceiling_margin() -> float
+```
+
+*No parameters.*
+
+**Returns:** `float`.
+
+**Raises:** `RuntimeError` if the store is closed.
+
+### `store.set_sim_edge_policy(routing=False, parent=True, occlusion=0.0, pool=0)`
+
+How a new frame chooses its similarity edges. By default the top `edge_budget` content frames above `tau_similarity`, the parent included and never a Genesis or Seed frame. `occlusion > 0` drops a candidate when a nearer kept neighbour already covers it (`1.0` strict; larger keeps more); `pool` widens the candidate list at ingest cost. Runtime only, not persisted; each frame records the edges it chose.
+
+```python
+store.set_sim_edge_policy(routing=False, parent=True, occlusion=0.0, pool=0) -> None
+```
+
+**Parameters**
+
+| Name | Type | Required | Default | Description |
+|---|---|---|---|---|
+| `routing` | `bool` | no | `False` | Allow edges to Genesis/Seed frames. |
+| `parent` | `bool` | no | `True` | Allow an edge to the frame's own parent. |
+| `occlusion` | `float` | no | `0.0` | `0` = top-k; `> 0` = occlusion pruning with this alpha. |
+| `pool` | `int` | no | `0` | Candidates the commit walk returns; `0` = `edge_budget + 1`. |
+
+**Returns:** `None`.
+
+**Raises:** `RuntimeError` if the store is closed.
+
+### `store.sim_edge_policy()`
+
+Current similarity-edge policy (see `set_sim_edge_policy`).
+
+```python
+store.sim_edge_policy() -> tuple[bool, bool, float, int]
+```
+
+*No parameters.*
+
+**Returns:** `tuple[bool, bool, float, int]` — (routing, parent, occlusion, pool).
+
+**Raises:** `RuntimeError` if the store is closed.
+
+### `store.set_search_rank_mode(mode="cosine", share=0.3, doors=5, budget=30)`
+
+How result slots are filled by `search` and the reads built on it. `"cosine"` (the default) ranks every slot by similarity. `"two_channel"` gives the last `round(share * top_k)` slots to frames reached by a descent from the `doors` nearest eigenframes, bounded by `budget` frames, that the similarity ranking lacks. Runtime only, not persisted.
+
+```python
+store.set_search_rank_mode(mode="cosine", share=0.3, doors=5, budget=30) -> None
+```
+
+**Parameters**
+
+| Name | Type | Required | Default | Description |
+|---|---|---|---|---|
+| `mode` | `str` | no | `"cosine"` | `"cosine"` or `"two_channel"`. |
+| `share` | `float` | no | `0.3` | Fraction of `top_k` given to the descent channel (two_channel only). |
+| `doors` | `int` | no | `5` | Eigenframes the descent enters at (two_channel only). |
+| `budget` | `int` | no | `30` | Frames the descent admits before stopping (two_channel only). |
+
+**Returns:** `None`.
+
+**Raises:** `ValueError` for an unknown mode; `RuntimeError` if the store is closed.
 
 ---
 
@@ -245,12 +515,12 @@ store.put(b"sensitive content", embedding)   # encrypted transparently
 
 ## Configuration
 
-### `StoreConfig(model_id="BAAI/bge-small-en-v1.5", eigen_threshold=5, eigen_min_age_s=0.0, tau_similarity=0.5, tau_merge=0.92, max_index_elements=100000, custom_range=None, search_max_depth=50, search_visit_cap_multiplier=20, redirect_per_frame=True, secure=None, eigen_matmul_min=256, encryption_passphrase=None, search_use_stream=False, search_stream_threshold=50000, search_stream_beam=16)`
+### `StoreConfig(model_id="BAAI/bge-small-en-v1.5", eigen_threshold=5, eigen_min_age_s=0.0, tau_similarity=0.5, tau_merge=0.92, max_index_elements=100000, custom_range=None, search_max_depth=50, search_visit_cap_multiplier=20, redirect_per_frame=True, secure=None, eigen_matmul_min=256, encryption_passphrase=None, search_use_stream=False, search_stream_threshold=50000, search_stream_beam=16, vector_precision="codes4", resident_precision=None)`
 
-Store configuration object.
+Store configuration, given to `create`. The model id and the precisions are fixed for the store's life; the search knobs are runtime defaults.
 
 ```python
-StoreConfig(...) -> StoreConfig
+StoreConfig(model_id="BAAI/bge-small-en-v1.5", eigen_threshold=5, eigen_min_age_s=0.0, tau_similarity=0.5, tau_merge=0.92, max_index_elements=100000, custom_range=None, search_max_depth=50, search_visit_cap_multiplier=20, redirect_per_frame=True, secure=None, eigen_matmul_min=256, encryption_passphrase=None, search_use_stream=False, search_stream_threshold=50000, search_stream_beam=16, vector_precision="codes4", resident_precision=None) -> StoreConfig
 ```
 
 **Parameters**
@@ -264,19 +534,21 @@ StoreConfig(...) -> StoreConfig
 | `tau_merge` | `float` | no | `0.92` | Consolidation merge threshold. |
 | `max_index_elements` | `int` | no | `100000` | Max elements in the graph index. |
 | `custom_range` | `QuantizationRange \| None` | no | `None` | Custom quantization range for unknown models; `None` looks up the bundled table by `model_id`. |
-| `search_max_depth` | `int` | no | `50` | Maximum BFS depth during search. |
-| `search_visit_cap_multiplier` | `int` | no | `20` | Visit-cap multiplier for search. |
+| `search_max_depth` | `int` | no | `50` | Maximum depth of a search walk. |
+| `search_visit_cap_multiplier` | `int` | no | `20` | Legacy visit budget as a multiple of `top_k`, used when `search_max_visits` is `0`. |
 | `redirect_per_frame` | `bool` | no | `True` | Emit one redirect per superseded source frame. |
 | `secure` | `str \| None` | no | `None` | Security posture: `"off"`, `"standard"` (alias `"on"`), or `None` (auto-detect). |
-| `eigen_matmul_min` | `int` | no | `256` | Minimum eigenframes for the matrix GEMV scan (`0` = always). |
+| `eigen_matmul_min` | `int` | no | `256` | Eigenframe count from which the entry scan uses the resident matrix (`0` = always). |
 | `encryption_passphrase` | `str \| None` | no | `None` | Passphrase for AES-256-GCM encryption at rest. |
-| `search_use_stream` | `bool` | no | `False` | EXPERIMENTAL: force the trace-free gradient-beam stream read path regardless of store size. Runtime — not persisted. |
-| `search_stream_threshold` | `int` | no | `50000` | Frame-count threshold at/above which `search` auto-uses the stream (`0` disables the auto-gate). Runtime — not persisted. |
-| `search_stream_beam` | `int` | no | `16` | Stream beam width (`0` = unbounded). Runtime — not persisted. |
+| `search_use_stream` | `bool` | no | `False` | Use the bounded search walk regardless of store size. Runtime, not persisted. |
+| `search_stream_threshold` | `int` | no | `50000` | Store size from which `search` uses the bounded walk (`0` disables). Runtime, not persisted. |
+| `search_stream_beam` | `int` | no | `16` | Width of the bounded search walk (`0` = unbounded). Runtime, not persisted. |
+| `vector_precision` | `str` | no | `"codes4"` | Precision each frame's vector is stored at, fixed for the store's life: `"codes4"` (4-bit codes), `"fp32"`, `"fp16"`, `"bf16"` or `"fp64"`. Read-only once constructed. |
+| `resident_precision` | `str \| None` | no | `None` | Precision search scores from: `"fp32"`, `"fp16"`, `"bf16"` or `"frame"` (no resident copy). `None` derives it from `vector_precision`. Changeable at runtime with `set_resident_precision`. Read-only once constructed. |
 
-**Returns:** `StoreConfig`. All fields are readable/writable attributes.
+**Returns:** `StoreConfig` — all fields are readable attributes; all but the two precisions are writable.
 
-**Raises:** `ValueError` if `secure` is set to an unrecognized string (expected `"off"` or `"standard"`/`"on"`).
+**Raises:** `ValueError` if `secure` is set to an unrecognized string (expected `"off"` or `"standard"`/`"on"`), or if a precision name is unknown or reserved.
 
 ### `QuantizationRange(model_id, low, high, dim)`
 
@@ -295,7 +567,9 @@ QuantizationRange(model_id, low, high, dim) -> QuantizationRange
 | `high` | `float` | yes | -- | Upper bound of the embedding value range. |
 | `dim` | `int` | yes | -- | Embedding dimensionality. |
 
-**Returns:** `QuantizationRange`. Fields `.model_id`, `.low`, `.high`, `.dim` are readable/writable.
+**Returns:** `QuantizationRange` — fields .model_id, .low, .high, .dim are readable and writable.
+
+**Raises:** `ValueError` or `RuntimeError` on an invalid argument.
 
 ### `RelationMask(slots=[])`
 
@@ -313,6 +587,8 @@ RelationMask(slots=[]) -> RelationMask
 
 **Returns:** `RelationMask`.
 
+**Raises:** `ValueError` or `RuntimeError` on an invalid argument.
+
 Static constructors: `RelationMask.from_slots(slots)`, `RelationMask.empty()`,
 `RelationMask.semantic_only()` (PARENT_OF + SIMILAR_TO),
 `RelationMask.structural_only()` (empty — union user slots in as you go).
@@ -324,12 +600,12 @@ Instance API: `.slots` (getter, `list[int]`), `.contains(slot) -> bool`,
 
 ## Ingestion
 
-### `store.put(content, embedding)`
+### `store.put(content, embedding, seed_term=True)`
 
 Ingest content with a pre-computed embedding.
 
 ```python
-store.put(content, embedding) -> str
+store.put(content, embedding, seed_term=True) -> str
 ```
 
 **Parameters**
@@ -338,6 +614,7 @@ store.put(content, embedding) -> str
 |---|---|---|---|---|
 | `content` | `bytes` | yes | -- | Raw content bytes. |
 | `embedding` | `list[float]` | yes | -- | Embedding vector; length must equal the store dimension. |
+| `seed_term` | `bool` | no | `True` | Choose the parent with the commit-time seed term (see `set_seed_term`). `False` takes the raw-cosine parent for this frame. Similarity edges and the stored embedding are the same either way. |
 
 **Returns:** `str` — the new frame ID.
 
@@ -350,12 +627,12 @@ emb = store.encode("the cat sat on the mat")
 fid = store.put(b"the cat sat on the mat", emb)
 ```
 
-### `store.put_with_metadata(content, embedding, metadata_json="{}")`
+### `store.put_with_metadata(content, embedding, metadata_json="{}", seed_term=True)`
 
 Ingest content with an embedding and JSON metadata.
 
 ```python
-store.put_with_metadata(content, embedding, metadata_json="{}") -> str
+store.put_with_metadata(content, embedding, metadata_json="{}", seed_term=True) -> str
 ```
 
 **Parameters**
@@ -365,17 +642,18 @@ store.put_with_metadata(content, embedding, metadata_json="{}") -> str
 | `content` | `bytes` | yes | -- | Raw content bytes. |
 | `embedding` | `list[float]` | yes | -- | Embedding vector. |
 | `metadata_json` | `str` | no | `"{}"` | JSON object string of metadata key-value pairs. |
+| `seed_term` | `bool` | no | `True` | `False` takes the raw-cosine parent for this frame (see `set_seed_term`). |
 
 **Returns:** `str` — the new frame ID.
 
 **Raises:** `RuntimeError` as `put`, plus on invalid JSON.
 
-### `store.put_with_embedding(content, embedding)`
+### `store.put_with_embedding(content, embedding, seed_term=True)`
 
-Alias for [`put`](#storeputcontent-embedding) (Python wheel parity).
+Alias for `put` (Python wheel parity).
 
 ```python
-store.put_with_embedding(content, embedding) -> str
+store.put_with_embedding(content, embedding, seed_term=True) -> str
 ```
 
 **Parameters**
@@ -384,6 +662,7 @@ store.put_with_embedding(content, embedding) -> str
 |---|---|---|---|---|
 | `content` | `bytes` | yes | -- | Raw content bytes. |
 | `embedding` | `list[float]` | yes | -- | Embedding vector. |
+| `seed_term` | `bool` | no | `True` | `False` takes the raw-cosine parent for this frame (see `set_seed_term`). |
 
 **Returns:** `str` — the new frame ID.
 
@@ -391,15 +670,7 @@ store.put_with_embedding(content, embedding) -> str
 
 ### `store.put_batch(items)`
 
-Deprecated alias of `put_batch_incremental`.
-
-The two-phase snapshot path this name used to run was removed from the engine: it
-froze parent selection against the pre-batch store, so no item in a batch could
-attach to another, and a bulk load into a new store collapsed into a flat star on
-genesis with no item ever eligible for eigenframe promotion. Calls now take the
-incremental path: geometry identical to a sequential `put` loop, buffered writes.
-Leaves the store buffered — call `flush()` when the load is done. New code should
-call `put_batch_incremental` directly.
+Deprecated alias of `put_batch_incremental`; calls take the incremental path. Leaves the store buffered: call `flush()` when the load is done.
 
 ```python
 store.put_batch(items) -> list[str]
@@ -409,27 +680,26 @@ store.put_batch(items) -> list[str]
 
 | Name | Type | Required | Default | Description |
 |---|---|---|---|---|
-| `items` | `list[tuple[bytes, list[float]]]` | yes | -- | List of `(content, embedding)` tuples. |
+| `items` | `list[tuple[bytes, list[float]]]` | yes | -- | List of (content, embedding) tuples. |
 
 **Returns:** `list[str]` — frame IDs, one per item.
 
 **Raises:** `RuntimeError` if any embedding dimension mismatches, or the store is sealed/closed.
 
-### `store.put_batch_incremental(items)`
+### `store.put_batch_incremental(items, seed_term=True)`
 
-Batch ingest in which each parent is selected against the live store, so an item may attach to an earlier item of the same batch. This is the bulk-ingest path: it produces the same topology as calling `put` in a loop, at a fraction of the cost, because writes are buffered rather than flushed per frame.
-
-Insertion order affects the resulting tree — order the batch meaningfully before calling. The store is left in buffered mode; call `flush()` when the load is finished.
+Bulk ingest. Each item's parent is chosen against the live store, so an item may attach to an earlier item of the same batch, and the result is identical to calling `put` in a loop at a fraction of the cost. Insertion order shapes the tree, so order the batch meaningfully. The store is left buffered: call `flush()` when the load is finished.
 
 ```python
-store.put_batch_incremental(items) -> list[str]
+store.put_batch_incremental(items, seed_term=True) -> list[str]
 ```
 
 **Parameters**
 
 | Name | Type | Required | Default | Description |
 |---|---|---|---|---|
-| `items` | `list[tuple[bytes, list[float]]]` | yes | -- | List of `(content, embedding)` tuples. |
+| `items` | `list[tuple[bytes, list[float]]]` | yes | -- | List of (content, embedding) tuples. |
+| `seed_term` | `bool` | no | `True` | `False` takes raw-cosine parents for the whole batch (see `set_seed_term`). |
 
 **Returns:** `list[str]` — frame IDs, one per item.
 
@@ -437,7 +707,7 @@ store.put_batch_incremental(items) -> list[str]
 
 ### `store.supersede(frame_id)`
 
-Soft-forget a single frame: flips its status to `Superseded` in place (status is not part of the watermark). Creates no new frame and no redirect, and does not reparent children.
+Soft-forget a single frame: flips its status to Superseded in place. Creates no new frame and no redirect, and does not reparent children.
 
 ```python
 store.supersede(frame_id) -> str
@@ -449,19 +719,13 @@ store.supersede(frame_id) -> str
 |---|---|---|---|---|
 | `frame_id` | `str` | yes | -- | Frame ID to supersede. |
 
-**Returns:** `str` — the same `frame_id` echoed back.
+**Returns:** `str` — the same frame_id echoed back.
 
 **Raises:** `RuntimeError` if the frame is missing, consolidation-exempt, or the store is closed.
 
 ### `store.commit_marker(kind, metadata_json="{}")`
 
-Commit an application marker: a System sentinel with a zero embedding, parented
-under the system root. It has no geometric footprint — it is never an entry
-point, never a parent, never returned by search — but it is durable in the
-frame log like any other frame. Use it for application records that belong
-with the store (a fault ledger, a run manifest, a review note) rather than
-beside it. `kind` becomes the content prefix `_{kind}:` and is echoed in the
-metadata as `_marker`.
+Commit an application marker: a System frame with no embedding that search never returns, durable in the store like any other frame. Use it for application records that belong with the store (a run manifest, a review note). `kind` becomes the content prefix `_{kind}:` and is echoed in the metadata as `_marker`.
 
 ```python
 store.commit_marker(kind, metadata_json="{}") -> str
@@ -472,7 +736,7 @@ store.commit_marker(kind, metadata_json="{}") -> str
 | Name | Type | Required | Default | Description |
 |---|---|---|---|---|
 | `kind` | `str` | yes | -- | Marker kind. Non-empty, no `:` and no whitespace. The kinds the load path interprets (`promote`, `supersede`, `seal`, `seraph_seeds`, `seraph_warp_cal`, anything starting `seraph`, case-insensitive, with or without a leading `_`) are refused. |
-| `metadata_json` | `str` | no | `"{}"` | JSON **object**. Keys the load path acts on (`_promote`, `_supersede`, any `_seraph*`) are refused, so a marker can never forge a promotion, a supersede or a registry on reopen. |
+| `metadata_json` | `str` | no | `"{}"` | JSON object. Keys the load path acts on (`_promote`, `_supersede`, any `_seraph*`) are refused, so a marker can never forge a promotion, a supersede or a registry on reopen. |
 
 **Returns:** `str` — the marker's frame ID.
 
@@ -492,7 +756,7 @@ store.markers(kind) -> list[tuple[str, str]]
 |---|---|---|---|---|
 | `kind` | `str` | yes | -- | The kind passed to `commit_marker`. |
 
-**Returns:** `list[tuple[str, str]]` — `(frame_id, metadata_json)` pairs; empty for an unknown kind or a store with no system root.
+**Returns:** `list[tuple[str, str]]` — (frame_id, metadata_json) pairs; empty for an unknown kind or a store with no system root.
 
 **Raises:** `RuntimeError` if the store is closed.
 
@@ -502,7 +766,7 @@ store.markers(kind) -> list[tuple[str, str]]
 
 ### `store.search(query_embedding, top_k=10, tau=0.5)`
 
-Graph-native ANN search for the nearest frames to a query embedding.
+Search for the frames nearest a query embedding, ranked by similarity.
 
 ```python
 store.search(query_embedding, top_k=10, tau=0.5) -> list[Hit]
@@ -514,9 +778,9 @@ store.search(query_embedding, top_k=10, tau=0.5) -> list[Hit]
 |---|---|---|---|---|
 | `query_embedding` | `list[float]` | yes | -- | Query vector. |
 | `top_k` | `int` | no | `10` | Maximum number of hits. |
-| `tau` | `float` | no | `0.5` | Minimum similarity threshold. |
+| `tau` | `float` | no | `0.5` | Minimum similarity for a hit. |
 
-**Returns:** `list[Hit]` — each with `.frame_id`, `.score`, `.confidence`, `.path_length`, `.snippet`, `.content`, and `.frame` (the resolved `Frame`).
+**Returns:** `list[Hit]` — each with .frame_id, .score, .confidence, .path_length, .snippet, .content and .frame.
 
 **Raises:** `RuntimeError` on dimension mismatch or a closed store.
 
@@ -530,7 +794,7 @@ for hit in store.search(q, top_k=5, tau=0.4):
 
 ### `store.search_with_opts(query_embedding, opts)`
 
-Search using a `SearchOpts` dataclass. Honors `top_k`, `tau_similarity`, `max_depth`, `include_superseded`, and the temporal view fields (`order`, `after_us`, `before_us` — see `SearchOpts`).
+Search with a `SearchOpts` options object: `top_k`, `tau_similarity`, `max_depth`, `include_superseded`, and the time-window fields (`order`, `after_us`, `before_us`).
 
 ```python
 store.search_with_opts(query_embedding, opts) -> list[Hit]
@@ -549,7 +813,7 @@ store.search_with_opts(query_embedding, opts) -> list[Hit]
 
 ### `store.search_by_vector(query_embedding, opts=None)`
 
-Search by a pre-computed query vector. With `opts=None`, behaves like `search(query_embedding, 10, 0.5)`; otherwise delegates to `search_with_opts`.
+Search by a pre-computed query vector with an optional SearchOpts. Without opts it is search with the defaults.
 
 ```python
 store.search_by_vector(query_embedding, opts=None) -> list[Hit]
@@ -560,7 +824,7 @@ store.search_by_vector(query_embedding, opts=None) -> list[Hit]
 | Name | Type | Required | Default | Description |
 |---|---|---|---|---|
 | `query_embedding` | `list[float]` | yes | -- | Query vector. |
-| `opts` | `SearchOpts \| None` | no | `None` | Search options, or `None` for defaults. |
+| `opts` | `SearchOpts \| None` | no | `None` | Search options; None uses the defaults. |
 
 **Returns:** `list[Hit]`.
 
@@ -568,7 +832,7 @@ store.search_by_vector(query_embedding, opts=None) -> list[Hit]
 
 ### `store.search_text(query, opts=None)`
 
-Search by text. Encodes `query` via the store's built-in encoder (lazy-loaded from `model_id`), then runs the standard search.
+Encode a text query with the store's model and search in one call. The encoder loads on first use.
 
 ```python
 store.search_text(query, opts=None) -> list[Hit]
@@ -579,7 +843,7 @@ store.search_text(query, opts=None) -> list[Hit]
 | Name | Type | Required | Default | Description |
 |---|---|---|---|---|
 | `query` | `str` | yes | -- | Query text. |
-| `opts` | `SearchOpts \| None` | no | `None` | Search options, or `None` for defaults (`top_k=10`, `tau=0.5`). |
+| `opts` |  | no | `None` | Search options. |
 
 **Returns:** `list[Hit]`.
 
@@ -587,7 +851,7 @@ store.search_text(query, opts=None) -> list[Hit]
 
 ### `store.search_with_trace(query_embedding, top_k=10, tau=0.5)`
 
-Search returning both hits and the BFS visit trace.
+Search returning the hits and the frames visited, in visit order.
 
 ```python
 store.search_with_trace(query_embedding, top_k=10, tau=0.5) -> tuple[list[Hit], list[TraceEntry]]
@@ -599,15 +863,15 @@ store.search_with_trace(query_embedding, top_k=10, tau=0.5) -> tuple[list[Hit], 
 |---|---|---|---|---|
 | `query_embedding` | `list[float]` | yes | -- | Query vector. |
 | `top_k` | `int` | no | `10` | Maximum number of hits. |
-| `tau` | `float` | no | `0.5` | Minimum similarity threshold. |
+| `tau` | `float` | no | `0.5` | Minimum similarity for a hit. |
 
-**Returns:** `tuple[list[Hit], list[TraceEntry]]` — score-ranked hits and visit-order trace.
+**Returns:** `tuple[list[Hit], list[TraceEntry]]` — score-ranked hits and the visit-order trace.
 
 **Raises:** `RuntimeError` on dimension mismatch or a closed store.
 
 ### `store.search_with_warp(query_embedding, targets, suppress, profile="bounded", bound_k=1.5, top_k=10, tau=0.5)`
 
-Search with warp-field steering (target pull + suppression).
+Search with warp-field steering: the query is pulled toward `targets` and away from `suppress` before the search.
 
 ```python
 store.search_with_warp(query_embedding, targets, suppress, profile="bounded", bound_k=1.5, top_k=10, tau=0.5) -> list[Hit]
@@ -618,12 +882,12 @@ store.search_with_warp(query_embedding, targets, suppress, profile="bounded", bo
 | Name | Type | Required | Default | Description |
 |---|---|---|---|---|
 | `query_embedding` | `list[float]` | yes | -- | Query vector. |
-| `targets` | `list[tuple[list[float], float]]` | yes | -- | `(embedding, magnitude)` pull pairs. |
-| `suppress` | `list[tuple[list[float], float]]` | yes | -- | `(embedding, magnitude)` suppression pairs. |
+| `targets` | `list[tuple[list[float], float]]` | yes | -- | (embedding, magnitude) pull pairs. |
+| `suppress` | `list[tuple[list[float], float]]` | yes | -- | (embedding, magnitude) suppression pairs. |
 | `profile` | `str` | no | `"bounded"` | `"routing"`, `"saturation"`, or `"bounded"`. |
 | `bound_k` | `float` | no | `1.5` | Suppression-norm cap (used only by `"bounded"`). |
 | `top_k` | `int` | no | `10` | Maximum number of hits. |
-| `tau` | `float` | no | `0.5` | Minimum similarity threshold. |
+| `tau` | `float` | no | `0.5` | Minimum similarity for a hit. |
 
 **Returns:** `list[Hit]`.
 
@@ -631,7 +895,7 @@ store.search_with_warp(query_embedding, targets, suppress, profile="bounded", bo
 
 ### `store.search_with_warp_spec(query_embedding, spec, top_k=10, tau=0.5, magnitude_overrides=None)`
 
-Search using a `WarpSpec` object. Resolves frame-id inputs and named magnitudes against the store's corpus and the bundled `NAMED_MAGNITUDES` table.
+Search steered by a warp specification in one call. Frame-ID targets and named magnitudes in the spec are resolved against the store.
 
 ```python
 store.search_with_warp_spec(query_embedding, spec, top_k=10, tau=0.5, magnitude_overrides=None) -> list[Hit]
@@ -642,10 +906,10 @@ store.search_with_warp_spec(query_embedding, spec, top_k=10, tau=0.5, magnitude_
 | Name | Type | Required | Default | Description |
 |---|---|---|---|---|
 | `query_embedding` | `list[float]` | yes | -- | Query vector. |
-| `spec` | `WarpSpec` | yes | -- | Warp specification. |
+| `spec` | `WarpSpec` | yes | -- | Warp specification; a JSON document on C and Rust. |
 | `top_k` | `int` | no | `10` | Maximum number of hits. |
-| `tau` | `float` | no | `0.5` | Minimum similarity threshold. |
-| `magnitude_overrides` | `dict[str, float] \| None` | no | `None` | Overrides for named magnitudes. |
+| `tau` | `float` | no | `0.5` | Minimum similarity for a hit. |
+| `magnitude_overrides` | `dict[str, float] \| None` | no | `None` | Per-name overrides of the spec's named magnitudes. |
 
 **Returns:** `list[Hit]`.
 
@@ -653,31 +917,35 @@ store.search_with_warp_spec(query_embedding, spec, top_k=10, tau=0.5, magnitude_
 
 ### `store.warp_calibration()`
 
-The store's resident warp calibration as a dict (named magnitude → value), or `None` if the store has not been calibrated. Named-magnitude warp resolves against this — there are no built-in presets.
+The store's resident warp calibration as a mapping from named magnitude to value, or `None` if the store has not been calibrated. Named-magnitude warps resolve against this; there are no built-in presets.
 
 ```python
 store.warp_calibration() -> dict | None
 ```
 
-**Returns:** `dict[str, float]` mapping each named magnitude to its calibrated value, or `None` if the store is uncalibrated.
+*No parameters.*
+
+**Returns:** `dict | None` — named magnitude to value; None if the store is uncalibrated.
 
 **Raises:** `RuntimeError` if the store is closed.
 
 ### `store.fixup_warp()`
 
-Sweep the store's own encoder + corpus and, if the result has drifted `> 0.1` from the persisted calibration (or none exists), persist a new calibration sentinel and adopt it. Call from the single writer after open.
+Refresh the store's warp calibration from its own corpus when the persisted one has drifted or none exists, and persist the result. Call from the single writer after open.
 
 ```python
 store.fixup_warp() -> bool
 ```
 
-**Returns:** `True` if it (re)calibrated, `False` if it skipped (calibration not stale, or geometry not yet developed).
+*No parameters.*
+
+**Returns:** `bool` — True if it recalibrated, False if the calibration was current or the geometry not yet developed.
 
 **Raises:** `RuntimeError` if the store is closed.
 
 ### `SearchOpts(top_k=10, tau_similarity=0.5, max_depth=50, include_superseded=False, order=None, after_us=None, before_us=None)`
 
-Ergonomic search-options dataclass. The temporal fields (`order`, `after_us`, `before_us`) route the search through the temporal view: relevance selection is unchanged — the inclusive timestamp window only scopes which frames may occupy result slots (out-of-window frames still route the traversal), and `order` reorders the already-selected top_k set as pure presentation (scores untouched). With all three unset, behaviour is identical to the pre-temporal path.
+Search options for `search_with_opts`, `search_by_vector` and `search_text`. `after_us` and `before_us` set an inclusive time window on which frames may fill result slots, and with `before_us` set the search runs over the store as it stood at that time; `order` sorts the selected results by time without changing their scores. With no window and the default order, the result matches `search`.
 
 ```python
 SearchOpts(top_k=10, tau_similarity=0.5, max_depth=50, include_superseded=False, order=None, after_us=None, before_us=None) -> SearchOpts
@@ -692,10 +960,12 @@ SearchOpts(top_k=10, tau_similarity=0.5, max_depth=50, include_superseded=False,
 | `max_depth` | `int` | no | `50` | Accepted for parity; not honored (depth comes from `StoreConfig.search_max_depth`). |
 | `include_superseded` | `bool` | no | `False` | Opts plainly-superseded (soft-forgotten) frames back into results. |
 | `order` | `str \| None` | no | `None` | Presentation order: `"relevance"` (default), `"most_recent"` (timestamp descending), `"oldest"` (timestamp ascending). Invalid values raise `ValueError`. |
-| `after_us` | `int \| None` | no | `None` | Inclusive lower bound on frame timestamp (µs since epoch); `None` = unbounded. |
-| `before_us` | `int \| None` | no | `None` | Inclusive upper bound on frame timestamp (µs since epoch); `None` = unbounded. |
+| `after_us` | `int \| None` | no | `None` | Inclusive lower bound on frame timestamp (microseconds since the epoch); `None` = unbounded. |
+| `before_us` | `int \| None` | no | `None` | Inclusive upper bound on frame timestamp (microseconds since the epoch); `None` = unbounded. |
 
-**Returns:** `SearchOpts`. All fields are readable/writable attributes.
+**Returns:** `SearchOpts` — all fields are readable and writable attributes.
+
+**Raises:** `ValueError` or `RuntimeError` on an invalid argument.
 
 > `SearchOpts` takes effect through `search_with_opts`, `search_by_vector`, and `search_text`.
 
@@ -710,8 +980,7 @@ model and dimension (enforced at add).
 
 ### `Federation.open_dir(dir)`
 
-Open every `.sfg` store in a directory as a federation, named by file stem
-(`physics.sfg` → `"physics"`); files starting with `_` or `router` are skipped.
+Open every `.sfg` store in a directory as a federation, each member named by its file stem (`physics.sfg` becomes `"physics"`); files starting with `_` or `router` are skipped.
 
 ```python
 Federation.open_dir(dir) -> Federation
@@ -719,105 +988,115 @@ Federation.open_dir(dir) -> Federation
 
 **Parameters**
 
-| Name | Type | Required | Description |
-|---|---|---|---|
-| `dir` | `str` | yes | Directory containing the member `.sfg` files. |
+| Name | Type | Required | Default | Description |
+|---|---|---|---|---|
+| `dir` | `str` | yes | -- | Directory holding the member stores. |
 
 **Returns:** `Federation`.
 
-```python
-fed = seraph.Federation.open_dir("/data/federation")
-hits = fed.search(query_emb, top_k=10, tau=0.60, mode="best")
-```
+**Raises:** `RuntimeError` if the store is closed or the operation fails.
 
 ### `Federation()`
 
-Create an empty federation. Add stores with `add_path`.
+Create an empty federation. Add member stores with `add_path`, or open a directory of stores with `open_dir`.
 
 ```python
 Federation() -> Federation
 ```
 
+*No parameters.*
+
 **Returns:** `Federation`.
+
+**Raises:** `ValueError` or `RuntimeError` on an invalid argument.
 
 ### `Federation.add_path(name, path)`
 
-Register a store file under `name`. The store must share the federation's
-embedding model and dimension.
+Register a store file under `name` as a member of the federation. The store must share the federation's embedding model and dimension.
 
 ```python
-fed.add_path(name, path) -> None
+Federation.add_path(name, path) -> None
 ```
 
 **Parameters**
 
-| Name | Type | Required | Description |
-|---|---|---|---|
-| `name` | `str` | yes | Federation-local label for the store. |
-| `path` | `str` | yes | Path to the `.sfg` file. |
+| Name | Type | Required | Default | Description |
+|---|---|---|---|---|
+| `name` | `str` | yes | -- | Member name. |
+| `path` | `str` | yes | -- | Path to the member's `.sfg` file. |
 
-**Returns:** `None`. Raises on model/dimension mismatch.
+**Returns:** `None` — raises on a model or dimension mismatch.
+
+**Raises:** `RuntimeError` if the store is closed or the operation fails.
 
 ### `Federation.member_names()`
 
 Member store names, in add order.
 
 ```python
-fed.member_names() -> list[str]
+Federation.member_names() -> list[str]
 ```
+
+*No parameters.*
 
 **Returns:** `list[str]`.
 
+**Raises:** `RuntimeError` if the store is closed or the operation fails.
+
 ### `Federation.refresh()`
 
-Re-pull routing vectors for any member that promoted an eigenframe since the last
-refresh (flagged via the store's `promote` event). Cheap — only changed members.
+Re-pull routing vectors for any member that promoted an eigenframe since the last refresh. Cheap: only changed members are read.
 
 ```python
-fed.refresh() -> bool
+Federation.refresh() -> bool
 ```
 
-**Returns:** `bool` — `True` if the router changed.
+*No parameters.*
+
+**Returns:** `bool` — True if the router changed.
+
+**Raises:** `RuntimeError` if the store is closed or the operation fails.
 
 ### `Federation.route(query, top_stores)`
 
-Route the query to the top `top_stores` members without searching them.
+Route a query to the members most likely to hold its answer, without searching them.
 
 ```python
-fed.route(query, top_stores) -> list[tuple[str, float]]
+Federation.route(query, top_stores) -> list[tuple[str, float]]
 ```
 
 **Parameters**
 
-| Name | Type | Required | Description |
-|---|---|---|---|
-| `query` | `list[float]` | yes | Query embedding. |
-| `top_stores` | `int` | yes | Number of stores to return. |
+| Name | Type | Required | Default | Description |
+|---|---|---|---|---|
+| `query` | `list[float]` | yes | -- | Query vector. |
+| `top_stores` | `int` | yes | -- | Members to return. |
 
-**Returns:** `list[(store_name, score)]`.
+**Returns:** `list[tuple[str, float]]` — (store_name, score) pairs.
 
-### `Federation.search(query, top_k, tau, mode='best', n=3)`
+**Raises:** `RuntimeError` if the store is closed or the operation fails.
 
-Route and fan out search across the selected stores in parallel, merging results by
-cosine score. `mode` is `"best"` (single best store), `"top"` (top-`n` stores), or
-`"all"` (every store). Each routed store returns `top_k`; results truncate to `top_k`.
+### `Federation.search(query, top_k, tau, mode="best", n=3)`
+
+Search the federation: route the query to the best-fitting members, search each, and merge the hits into one ranked list.
 
 ```python
-fed.search(query, top_k, tau, mode='best', n=3) -> list[FederatedHit]
+Federation.search(query, top_k, tau, mode="best", n=3) -> list[FederatedHit]
 ```
 
 **Parameters**
 
-| Name | Type | Required | Description |
-|---|---|---|---|
-| `query` | `list[float]` | yes | Query embedding. |
-| `top_k` | `int` | yes | Number of results to return. |
-| `tau` | `float` | yes | Similarity threshold. |
-| `mode` | `str` | no | `"best"`, `"top"`, or `"all"` (default `"best"`). |
-| `n` | `int` | no | Stores for `"top"` mode (default `3`). |
+| Name | Type | Required | Default | Description |
+|---|---|---|---|---|
+| `query` | `list[float]` | yes | -- | Query vector. |
+| `top_k` | `int` | yes | -- | Maximum number of hits. |
+| `tau` | `float` | yes | -- | Minimum similarity for a hit. |
+| `mode` | `str` | no | `"best"` | Routing mode: `"best"` (the best-fitting member), `"top"` (the `n` best) or `"all"`. |
+| `n` | `int` | no | `3` | Members searched under `"top"`. |
 
-**Returns:** `list[FederatedHit]` — each with `.store`, `.frame_id`, `.score`,
-`.confidence`, `.path_length`, `.content`, `.snippet`.
+**Returns:** `list[FederatedHit]` — hits tagged with the member store they came from.
+
+**Raises:** `RuntimeError` if the store is closed or the operation fails.
 
 ---
 
@@ -825,7 +1104,7 @@ fed.search(query, top_k, tau, mode='best', n=3) -> list[FederatedHit]
 
 ### `store.get_frame(frame_id)`
 
-Get a frame by ID (full data including embedding and metadata).
+Get a frame by ID, with its full data including embedding and metadata.
 
 ```python
 store.get_frame(frame_id) -> Frame | None
@@ -837,13 +1116,13 @@ store.get_frame(frame_id) -> Frame | None
 |---|---|---|---|---|
 | `frame_id` | `str` | yes | -- | Frame ID to fetch. |
 
-**Returns:** `Frame | None` — `None` if not found.
+**Returns:** `Frame | None` — None if not found.
 
 **Raises:** `RuntimeError` if the store is closed.
 
 ### `store.get(frame_id)`
 
-Alias for [`get_frame`](#storeget_frameframe_id).
+Alias for get_frame.
 
 ```python
 store.get(frame_id) -> Frame | None
@@ -855,13 +1134,17 @@ store.get(frame_id) -> Frame | None
 |---|---|---|---|---|
 | `frame_id` | `str` | yes | -- | Frame ID to fetch. |
 
-**Returns:** `Frame | None`.
+**Returns:** `Frame | None` — None if not found.
 
 **Raises:** `RuntimeError` if the store is closed.
 
 ### `store.frame_ids()`
 
 All frame IDs in insertion order.
+
+```python
+store.frame_ids() -> list[str]
+```
 
 *No parameters.*
 
@@ -871,7 +1154,11 @@ All frame IDs in insertion order.
 
 ### `store.eigenframe_ids()`
 
-IDs of eigenframes only.
+IDs of the eigenframes.
+
+```python
+store.eigenframe_ids() -> list[str]
+```
 
 *No parameters.*
 
@@ -881,7 +1168,11 @@ IDs of eigenframes only.
 
 ### `store.eigenframes()`
 
-Full `Frame` objects for all eigenframes.
+Full Frame objects for all eigenframes.
+
+```python
+store.eigenframes() -> list[Frame]
+```
 
 *No parameters.*
 
@@ -891,7 +1182,7 @@ Full `Frame` objects for all eigenframes.
 
 ### `store.children(frame_id)`
 
-Child frames of a given frame, as full `Frame` objects.
+The child frames of a frame as full Frame objects. get_children returns their IDs.
 
 ```python
 store.children(frame_id) -> list[Frame]
@@ -909,7 +1200,7 @@ store.children(frame_id) -> list[Frame]
 
 ### `store.get_children(frame_id)`
 
-Child frame IDs only (lighter than `children()`).
+Child frame IDs of a frame.
 
 ```python
 store.get_children(frame_id) -> list[str]
@@ -929,6 +1220,10 @@ store.get_children(frame_id) -> list[str]
 
 The embedding model ID declared at genesis.
 
+```python
+store.model_id() -> str
+```
+
 *No parameters.*
 
 **Returns:** `str`.
@@ -937,7 +1232,11 @@ The embedding model ID declared at genesis.
 
 ### `store.dim()`
 
-Embedding dimensionality.
+Embedding dimensionality of the store.
+
+```python
+store.dim() -> int
+```
 
 *No parameters.*
 
@@ -947,11 +1246,15 @@ Embedding dimensionality.
 
 ### `store.federation_vector()`
 
-Mean of all eigenframe embeddings — a single vector representing the store's semantic center (federation routing).
+Mean of all eigenframe embeddings: a single vector representing the store's semantic centre, used for federation routing.
+
+```python
+store.federation_vector() -> list[float] | None
+```
 
 *No parameters.*
 
-**Returns:** `list[float] | None` — `None` if the store has no eigenframes.
+**Returns:** `list[float] | None` — None if the store has no eigenframes.
 
 **Raises:** `RuntimeError` if the store is closed.
 
@@ -959,9 +1262,13 @@ Mean of all eigenframe embeddings — a single vector representing the store's s
 
 Store statistics.
 
+```python
+store.stats() -> StoreStats
+```
+
 *No parameters.*
 
-**Returns:** `StoreStats` — `.total_frames`, `.active_frames`, `.eigenframes`, `.seeds`, `.redirects`, `.superseded`, `.model_id`.
+**Returns:** `StoreStats` — .total_frames, .active_frames, .eigenframes, .seeds, .redirects, .superseded, .model_id.
 
 **Raises:** `RuntimeError` if the store is closed.
 
@@ -969,9 +1276,13 @@ Store statistics.
 
 Verify watermark-chain integrity.
 
+```python
+store.verify() -> tuple[bool, list[str]]
+```
+
 *No parameters.*
 
-**Returns:** `tuple[bool, list[str]]` — `(ok, failures)`.
+**Returns:** `tuple[bool, list[str]]` — (ok, failures).
 
 **Raises:** `RuntimeError` if the store is closed.
 
@@ -1001,14 +1312,7 @@ store.add_seed(label, embedding, metadata_json="{}") -> str
 
 ### `store.get_seeds()`
 
-The authored seed list — an append-only registry of `label -> frame_id`
-bindings held in a `_seraph_seeds:` System sentinel.
-
-A binding may name **any** frame, not only a Seed-status one, which is how an
-eigenframe the geometry grew gets a stable name. When no registry has ever been
-authored the list is derived from the store's Seed-status frames instead, so a
-store predating the registry still answers; `seeds_are_authored()` tells the two
-apart.
+The authored seed list: `label -> frame_id` bindings in authored order. A binding may name any frame, not only a Seed. When no list has been authored, the store's Seed frames are returned instead; `seeds_are_authored()` tells the two apart.
 
 ```python
 store.get_seeds() -> list[SeedEntry]
@@ -1016,8 +1320,7 @@ store.get_seeds() -> list[SeedEntry]
 
 *No parameters.*
 
-**Returns:** `list[SeedEntry]` — each with `.label` and `.frame_id`, in authored
-order.
+**Returns:** `list[SeedEntry]` — each with .label and .frame_id, in authored order.
 
 **Raises:** `RuntimeError` if the store is closed.
 
@@ -1030,9 +1333,7 @@ for s in store.get_seeds():
 
 ### `store.seeds_are_authored()`
 
-Whether the seed list comes from a registry sentinel rather than being derived
-from Seed-status frames. An authored **empty** registry is a real state and is
-authoritative — it does not fall back to the derived list.
+Whether the seed list comes from an authored registry rather than being derived from Seed-status frames. An authored empty registry is a real state and is authoritative; it does not fall back to the derived list.
 
 ```python
 store.seeds_are_authored() -> bool
@@ -1040,13 +1341,13 @@ store.seeds_are_authored() -> bool
 
 *No parameters.*
 
-**Returns:** `bool` — `True` if authored, `False` if derived.
+**Returns:** `bool` — True if authored, False if derived.
 
 **Raises:** `RuntimeError` if the store is closed.
 
 ### `store.resolve_seed(label)`
 
-Resolve a seed label to its frame id. Labels are unique within a registry.
+Resolve a seed label to its frame ID. Labels are unique within a store's seed registry.
 
 ```python
 store.resolve_seed(label) -> str | None
@@ -1056,22 +1357,15 @@ store.resolve_seed(label) -> str | None
 
 | Name | Type | Required | Default | Description |
 |---|---|---|---|---|
-| `label` | `str` | yes | -- | Seed label to resolve. |
+| `label` | `str` | yes | -- | Registered seed label. |
 
-**Returns:** `str | None` — the frame ID, or `None` if the label is not
-registered.
+**Returns:** `str | None` — the frame ID; None if the label is not registered.
 
 **Raises:** `RuntimeError` if the store is closed.
 
 ### `store.set_seeds(entries)`
 
-Replace the whole registry, appending a new snapshot sentinel. The full list is
-rewritten on every mutation rather than journalled as a delta, so a reader
-resolves the registry with one read of the last snapshot instead of folding the
-store's history.
-
-Removing a label removes it from the authored set **only** — it does not demote
-the frame, which keeps whatever status and geometric pull it already had.
+Replace the authored seed list. Removing a label removes it from the list only; the frame keeps its status.
 
 ```python
 store.set_seeds(entries) -> str
@@ -1096,8 +1390,7 @@ store.set_seeds([seraph.SeedEntry("evidence", fid)])
 
 ### `store.register_seed(label, frame_id)`
 
-Bind one label, appending a new snapshot. Rebinding an existing label updates it
-in place, preserving its authored position.
+Bind a label to a frame in the seed registry, appending a new registry snapshot. Rebinding an existing label updates it in place and keeps its position.
 
 ```python
 store.register_seed(label, frame_id) -> str
@@ -1107,18 +1400,17 @@ store.register_seed(label, frame_id) -> str
 
 | Name | Type | Required | Default | Description |
 |---|---|---|---|---|
-| `label` | `str` | yes | -- | Label to bind. |
-| `frame_id` | `str` | yes | -- | Frame to bind it to; must exist in the store. |
+| `label` | `str` | yes | -- | Seed label; unique within the registry. |
+| `frame_id` | `str` | yes | -- | Frame the label names. |
 
-**Returns:** `str` — the snapshot sentinel's frame ID.
+**Returns:** `str` — the new registry snapshot's frame ID.
 
 **Raises:** `RuntimeError` on an empty label, an unknown `frame_id`, a sealed
 store, or a closed store.
 
 ### `store.unregister_seed(label)`
 
-Drop a label from the authored set, appending a new snapshot. The frame it named
-is untouched.
+Drop a label from the seed registry, appending a new registry snapshot. The frame it named is untouched.
 
 ```python
 store.unregister_seed(label) -> str
@@ -1128,17 +1420,16 @@ store.unregister_seed(label) -> str
 
 | Name | Type | Required | Default | Description |
 |---|---|---|---|---|
-| `label` | `str` | yes | -- | Label to drop. |
+| `label` | `str` | yes | -- | Registered seed label. |
 
-**Returns:** `str` — the snapshot sentinel's frame ID.
+**Returns:** `str` — the new registry snapshot's frame ID; an error if the label is not registered.
 
 **Raises:** `RuntimeError` if the label is not registered, on a sealed store, or
 on a closed store.
 
 ### `SeedEntry(label, frame_id)`
 
-One authored `label -> frame_id` binding in the seed registry. Returned by
-`get_seeds()` and accepted by `set_seeds()`.
+One authored `label -> frame_id` binding in the seed registry. Returned by `get_seeds` and accepted by `set_seeds`.
 
 ```python
 SeedEntry(label, frame_id) -> SeedEntry
@@ -1151,22 +1442,13 @@ SeedEntry(label, frame_id) -> SeedEntry
 | `label` | `str` | yes | -- | Seed label; unique within a registry. |
 | `frame_id` | `str` | yes | -- | Frame the label names; need not be Seed-status. |
 
-**Returns:** `SeedEntry`. Read-only getters: `.label`, `.frame_id`. Supports
-`==` and `repr()`.
+**Returns:** `SeedEntry` — read-only getters .label and .frame_id; supports == and repr().
+
+**Raises:** `ValueError` or `RuntimeError` on an invalid argument.
 
 ### `store.put_subtree(root, content, embedding, metadata_json="{}")`
 
-Ingest content into a named subtree: the parent is chosen from inside `root`'s
-parent-edge subtree instead of from the store at large.
-
-The region is asserted by the caller; the position inside it is still derived by
-the geometry, so lineage stays graded and depth stays real. There is no
-similarity floor — a placement is asserted, so no score refuses it.
-
-Similarity edges are chosen **globally**, exactly as `put()` chooses them. Only
-the parent edge is overridden, so a placed frame remains reachable by ordinary
-`search()`. The frame is stamped with `_placed_under` so `migrate_store()`
-re-derives its position inside the same region rather than re-routing it.
+Ingest content under a named subtree: the parent is chosen from inside `root`'s subtree instead of the whole store, with no similarity floor. Similarity edges are chosen globally as `put` chooses them, so the frame stays reachable by ordinary search. The placement is recorded on the frame so a migration keeps it inside the same region.
 
 ```python
 store.put_subtree(root, content, embedding, metadata_json="{}") -> str
@@ -1194,11 +1476,7 @@ fid = store.put_subtree("evidence", b"exhibit A", emb)
 
 ### `store.search_subtree(root, embedding, top_k=10, tau=None)`
 
-Search confined to a named subtree. Phase 1 is skipped entirely — the root is
-the entry point — and the traversal follows parent edges plus only those
-similarity edges whose target is inside the subtree.
-
-Ordinary `search()` is unaffected and still reaches these frames.
+Search confined to a named subtree: the root is the entry point and only edges inside the subtree are followed. Ordinary `search` is unaffected and still reaches these frames.
 
 ```python
 store.search_subtree(root, embedding, top_k=10, tau=None) -> list[Hit]
@@ -1216,9 +1494,6 @@ store.search_subtree(root, embedding, top_k=10, tau=None) -> list[Hit]
 **Returns:** `list[Hit]`.
 
 **Raises:** `RuntimeError` on an unknown root or a closed store.
-
-**Note:** Depth is bounded by `StoreConfig.search_max_depth`; the subtree itself
-bounds the visit count.
 
 ### `store.promote(frame_id)`
 
@@ -1240,7 +1515,7 @@ store.promote(frame_id) -> None
 
 ### `store.promote_content(content, embedding, metadata_json="{}")`
 
-Ingest content and immediately promote it to eigenframe (atomic ingest + promote).
+Ingest content and immediately promote it to eigenframe (atomic ingest plus promote).
 
 ```python
 store.promote_content(content, embedding, metadata_json="{}") -> str
@@ -1264,7 +1539,7 @@ store.promote_content(content, embedding, metadata_json="{}") -> str
 
 ### `store.path(from_id, to_id)`
 
-BFS path between two frames via parent-child adjacency.
+Shortest path between two frames over parent-child links.
 
 ```python
 store.path(from_id, to_id) -> list[Frame]
@@ -1277,16 +1552,16 @@ store.path(from_id, to_id) -> list[Frame]
 | `from_id` | `str` | yes | -- | Start frame ID. |
 | `to_id` | `str` | yes | -- | End frame ID. |
 
-**Returns:** `list[Frame]` — ordered `from_id → to_id`, empty if unreachable.
+**Returns:** `list[Frame]` — ordered from_id to to_id, empty if unreachable.
 
 **Raises:** `RuntimeError` if the store is closed.
 
-### `store.chain(from_id, to_id)`
+### `store.chain(from_id, to_id, include_superseded=False)`
 
-Semantic chain between two frame IDs (parent-tree or similarity walk).
+The shortest route between two frames over committed edges (similarity edges and parent/child links), each step weighted by how similar its two frames are. Exact; bounded by `search_max_visits`. For a frame's own ancestry use `lineage`.
 
 ```python
-store.chain(from_id, to_id) -> Chain
+store.chain(from_id, to_id, include_superseded=False) -> Chain
 ```
 
 **Parameters**
@@ -1295,14 +1570,167 @@ store.chain(from_id, to_id) -> Chain
 |---|---|---|---|---|
 | `from_id` | `str` | yes | -- | Start frame ID. |
 | `to_id` | `str` | yes | -- | End frame ID. |
+| `include_superseded` | `bool` | no | `False` | Let superseded frames be steps. |
 
 **Returns:** `Chain`.
 
 **Raises:** `RuntimeError` if the store is closed.
 
+### `store.chain_forward(from_id, to_id, include_superseded=False)`
+
+How `from_id` led to `to_id`: the shortest route over committed edges taking only steps forward in commit order, so each step is to a frame that attached to the one before it when it was committed. `from_id` must precede `to_id`; `reached` is `False` when no such route exists. Crosses lineages, which `lineage` cannot.
+
+```python
+store.chain_forward(from_id, to_id, include_superseded=False) -> Chain
+```
+
+**Parameters**
+
+| Name | Type | Required | Default | Description |
+|---|---|---|---|---|
+| `from_id` | `str` | yes | -- | Earlier frame ID. |
+| `to_id` | `str` | yes | -- | Later frame ID. |
+| `include_superseded` | `bool` | no | `False` | Let superseded frames be steps. A frame only takes an edge to a frame current when it arrived, so a superseded step is history. |
+
+**Returns:** `Chain`.
+
+**Raises:** `RuntimeError` if the store is closed.
+
+### `store.chain_forward_between(emb_a, emb_b, top_k=10, tau=0.5, include_superseded=False)`
+
+How the idea at `emb_a` led to the idea at `emb_b`. Each query's `search` results (under `top_k` and `tau`) stand for it; the best-fitting earlier/later pair that a forward route joins is chosen, and the route is the forward chain between them. `reached` is `False` when no forward route joins the two result sets.
+
+```python
+store.chain_forward_between(emb_a, emb_b, top_k=10, tau=0.5, include_superseded=False) -> Chain
+```
+
+**Parameters**
+
+| Name | Type | Required | Default | Description |
+|---|---|---|---|---|
+| `emb_a` | `list[float]` | yes | -- | The earlier idea. |
+| `emb_b` | `list[float]` | yes | -- | The later idea. |
+| `top_k` | `int` | no | `10` | Search results per query that may stand for it. |
+| `tau` | `float` | no | `0.5` | Similarity floor for those results. |
+| `include_superseded` | `bool` | no | `False` | Let superseded frames be endpoints and steps. |
+
+**Returns:** `Chain`.
+
+**Raises:** `RuntimeError` if the store is closed.
+
+### `store.provenance(frame_id, tau=None, include_superseded=False)`
+
+What `frame_id` was built on: a route back in commit order through the frames it attached to when it was committed (its parent and the similarity neighbours it chose), stopping when the next step is no more related than the store's background. `tau` overrides that stop; `reached` is `True` when at least one step was taken.
+
+```python
+store.provenance(frame_id, tau=None, include_superseded=False) -> Chain
+```
+
+**Parameters**
+
+| Name | Type | Required | Default | Description |
+|---|---|---|---|---|
+| `frame_id` | `str` | yes | -- | Start frame. |
+| `tau` | `float \| None` | no | `None` | Stop floor; `None` for the store's background. |
+| `include_superseded` | `bool` | no | `False` | Let superseded frames be steps. |
+
+**Returns:** `Chain` — start frame first.
+
+**Raises:** `RuntimeError` if the store is closed.
+
+### `store.influence(frame_id, tau=None, include_superseded=False)`
+
+What was built on `frame_id`: a route forward in commit order through the frames that attached to it when they were committed, stopping when the next step is no more related than the store's background. `tau` overrides that stop; `reached` is `True` when at least one step was taken.
+
+```python
+store.influence(frame_id, tau=None, include_superseded=False) -> Chain
+```
+
+**Parameters**
+
+| Name | Type | Required | Default | Description |
+|---|---|---|---|---|
+| `frame_id` | `str` | yes | -- | Start frame. |
+| `tau` | `float \| None` | no | `None` | Stop floor; `None` for the store's background. |
+| `include_superseded` | `bool` | no | `False` | Let superseded frames be steps. |
+
+**Returns:** `Chain` — start frame first.
+
+**Raises:** `RuntimeError` if the store is closed.
+
+### `store.provenance_with_warp(frame_id, targets, suppress, profile="bounded", bound_k=1.5, tau=None, include_superseded=False)`
+
+`provenance` steered by a warp: steps are chosen, and the stop measured, against the start frame pulled toward `targets` and away from `suppress`, so the warp selects which strand is followed.
+
+```python
+store.provenance_with_warp(frame_id, targets, suppress, profile="bounded", bound_k=1.5, tau=None, include_superseded=False) -> Chain
+```
+
+**Parameters**
+
+| Name | Type | Required | Default | Description |
+|---|---|---|---|---|
+| `frame_id` | `str` | yes | -- | Start frame. |
+| `targets` | `list[tuple[list[float], float]]` | yes | -- | (embedding, magnitude) to steer toward. |
+| `suppress` | `list[tuple[list[float], float]]` | yes | -- | (embedding, magnitude) to steer away from. |
+| `profile` | `str` | no | `"bounded"` | Warp profile. |
+| `bound_k` | `float` | no | `1.5` | Suppression-norm cap. |
+| `tau` | `float \| None` | no | `None` | Stop floor; `None` for the store's background. |
+| `include_superseded` | `bool` | no | `False` | Let superseded frames be steps. |
+
+**Returns:** `Chain` — start frame first.
+
+**Raises:** `RuntimeError` if the store is closed.
+
+### `store.influence_with_warp(frame_id, targets, suppress, profile="bounded", bound_k=1.5, tau=None, include_superseded=False)`
+
+`influence` steered by a warp: steps are chosen, and the stop measured, against the start frame pulled toward `targets` and away from `suppress`, so the warp selects which strand is followed.
+
+```python
+store.influence_with_warp(frame_id, targets, suppress, profile="bounded", bound_k=1.5, tau=None, include_superseded=False) -> Chain
+```
+
+**Parameters**
+
+| Name | Type | Required | Default | Description |
+|---|---|---|---|---|
+| `frame_id` | `str` | yes | -- | Start frame. |
+| `targets` | `list[tuple[list[float], float]]` | yes | -- | (embedding, magnitude) to steer toward. |
+| `suppress` | `list[tuple[list[float], float]]` | yes | -- | (embedding, magnitude) to steer away from. |
+| `profile` | `str` | no | `"bounded"` | Warp profile. |
+| `bound_k` | `float` | no | `1.5` | Suppression-norm cap. |
+| `tau` | `float \| None` | no | `None` | Stop floor; `None` for the store's background. |
+| `include_superseded` | `bool` | no | `False` | Let superseded frames be steps. |
+
+**Returns:** `Chain` — start frame first.
+
+**Raises:** `RuntimeError` if the store is closed.
+
+### `store.connections(from_id, to_id, max_routes=5, forward=False, include_superseded=False)`
+
+The distinct ways two frames connect: up to `max_routes` routes over committed edges that share no interior frames, shortest first, each with its bridge frame (the interior frame closest to both ends). With `forward` set, every route runs forward in commit order: the ways `from_id` led to `to_id`.
+
+```python
+store.connections(from_id, to_id, max_routes=5, forward=False, include_superseded=False) -> list[Connection]
+```
+
+**Parameters**
+
+| Name | Type | Required | Default | Description |
+|---|---|---|---|---|
+| `from_id` | `str` | yes | -- | Start frame. |
+| `to_id` | `str` | yes | -- | End frame. |
+| `max_routes` | `int` | no | `5` | Most routes returned. |
+| `forward` | `bool` | no | `False` | Routes forward in commit order only (`from_id` must precede `to_id`). |
+| `include_superseded` | `bool` | no | `False` | Let superseded frames be steps. |
+
+**Returns:** `list[Connection]` — empty when the frames are not joined.
+
+**Raises:** `RuntimeError` if the store is closed.
+
 ### `store.chain_to(query_embedding)`
 
-Chain from the nearest frame to a query embedding.
+Chain from the frame nearest a query embedding.
 
 ```python
 store.chain_to(query_embedding) -> Chain
@@ -1320,7 +1748,7 @@ store.chain_to(query_embedding) -> Chain
 
 ### `store.chain_between(emb_a, emb_b)`
 
-Chain between two points in embedding space.
+Chain between two points in embedding space: the route between the frames nearest each embedding.
 
 ```python
 store.chain_between(emb_a, emb_b) -> Chain
@@ -1337,9 +1765,55 @@ store.chain_between(emb_a, emb_b) -> Chain
 
 **Raises:** `RuntimeError` if the store is closed.
 
+### `store.history(query_embedding, top_k=10, tau=0.5, anchors=3)`
+
+How the store came to hold what the query finds. The top `anchors` search hits choose their lineages, and the best `top_k` frames along those lineages come back oldest first, each with the route that reached it. On a store ingested in time order the result reads as the development of a topic.
+
+```python
+store.history(query_embedding, top_k=10, tau=0.5, anchors=3) -> History
+```
+
+**Parameters**
+
+| Name | Type | Required | Default | Description |
+|---|---|---|---|---|
+| `query_embedding` | `list[float]` | yes | -- | Query vector. |
+| `top_k` | `int` | no | `10` | Frames to return. |
+| `tau` | `float` | no | `0.5` | Similarity floor for admission and results. |
+| `anchors` | `int` | no | `3` | Search hits used to choose the lineages. |
+
+**Returns:** `History`.
+
+**Raises:** `RuntimeError` if the store is closed.
+
+### `store.history_with_warp(query_embedding, targets, suppress, profile="bounded", bound_k=1.5, top_k=10, tau=0.5, anchors=3)`
+
+`history` from a warped query. The warp moves which lineages the anchors fall in, so it chooses which strand of a topic's history is read: toward a finding, away from a thread. Pass a frame's embedding as a target to steer toward that frame.
+
+```python
+store.history_with_warp(query_embedding, targets, suppress, profile="bounded", bound_k=1.5, top_k=10, tau=0.5, anchors=3) -> History
+```
+
+**Parameters**
+
+| Name | Type | Required | Default | Description |
+|---|---|---|---|---|
+| `query_embedding` | `list[float]` | yes | -- | Query vector. |
+| `targets` | `list[tuple[list[float], float]]` | yes | -- | (embedding, magnitude) pull pairs. |
+| `suppress` | `list[tuple[list[float], float]]` | yes | -- | (embedding, magnitude) suppression pairs. |
+| `profile` | `str` | no | `"bounded"` | `"routing"`, `"saturation"`, or `"bounded"`. |
+| `bound_k` | `float` | no | `1.5` | Suppression-norm cap. |
+| `top_k` | `int` | no | `10` | Frames to return. |
+| `tau` | `float` | no | `0.5` | Similarity floor. |
+| `anchors` | `int` | no | `3` | Search hits used to choose the lineages. |
+
+**Returns:** `History`.
+
+**Raises:** `RuntimeError` if the store is closed.
+
 ### `store.chain_to_with_warp(query_embedding, targets, suppress, profile="bounded", bound_k=1.5)`
 
-Warped `chain_to`.
+`chain_to` with a warp applied to the query before the route is found.
 
 ```python
 store.chain_to_with_warp(query_embedding, targets, suppress, profile="bounded", bound_k=1.5) -> Chain
@@ -1350,8 +1824,8 @@ store.chain_to_with_warp(query_embedding, targets, suppress, profile="bounded", 
 | Name | Type | Required | Default | Description |
 |---|---|---|---|---|
 | `query_embedding` | `list[float]` | yes | -- | Target query vector. |
-| `targets` | `list[tuple[list[float], float]]` | yes | -- | `(embedding, magnitude)` pull pairs. |
-| `suppress` | `list[tuple[list[float], float]]` | yes | -- | `(embedding, magnitude)` suppression pairs. |
+| `targets` | `list[tuple[list[float], float]]` | yes | -- | (embedding, magnitude) pull pairs. |
+| `suppress` | `list[tuple[list[float], float]]` | yes | -- | (embedding, magnitude) suppression pairs. |
 | `profile` | `str` | no | `"bounded"` | `"routing"`, `"saturation"`, or `"bounded"`. |
 | `bound_k` | `float` | no | `1.5` | Suppression-norm cap. |
 
@@ -1361,7 +1835,7 @@ store.chain_to_with_warp(query_embedding, targets, suppress, profile="bounded", 
 
 ### `store.chain_between_with_warp(emb_a, emb_b, targets, suppress, profile="bounded", bound_k=1.5)`
 
-Warped `chain_between`.
+`chain_between` with a warp applied to both endpoints before the route is found.
 
 ```python
 store.chain_between_with_warp(emb_a, emb_b, targets, suppress, profile="bounded", bound_k=1.5) -> Chain
@@ -1373,8 +1847,8 @@ store.chain_between_with_warp(emb_a, emb_b, targets, suppress, profile="bounded"
 |---|---|---|---|---|
 | `emb_a` | `list[float]` | yes | -- | First embedding. |
 | `emb_b` | `list[float]` | yes | -- | Second embedding. |
-| `targets` | `list[tuple[list[float], float]]` | yes | -- | `(embedding, magnitude)` pull pairs. |
-| `suppress` | `list[tuple[list[float], float]]` | yes | -- | `(embedding, magnitude)` suppression pairs. |
+| `targets` | `list[tuple[list[float], float]]` | yes | -- | (embedding, magnitude) pull pairs. |
+| `suppress` | `list[tuple[list[float], float]]` | yes | -- | (embedding, magnitude) suppression pairs. |
 | `profile` | `str` | no | `"bounded"` | `"routing"`, `"saturation"`, or `"bounded"`. |
 | `bound_k` | `float` | no | `1.5` | Suppression-norm cap. |
 
@@ -1384,7 +1858,7 @@ store.chain_between_with_warp(emb_a, emb_b, targets, suppress, profile="bounded"
 
 ### `store.lineage(frame_id)`
 
-Parent chain back to genesis: `[frame, parent, ..., GENESIS]`.
+Parent chain back to genesis: [frame, parent, ..., GENESIS].
 
 ```python
 store.lineage(frame_id) -> list[Frame]
@@ -1402,7 +1876,7 @@ store.lineage(frame_id) -> list[Frame]
 
 ### `store.gradient(chain)`
 
-Semantic gradient along an ordered list of frame IDs — one `GradientPoint` per step.
+Semantic gradient along an ordered list of frame IDs: one GradientPoint per step.
 
 ```python
 store.gradient(chain) -> list[GradientPoint]
@@ -1414,13 +1888,13 @@ store.gradient(chain) -> list[GradientPoint]
 |---|---|---|---|---|
 | `chain` | `list[str]` | yes | -- | Ordered frame IDs. |
 
-**Returns:** `list[GradientPoint]` — each with `.frame_id`, `.similarity`, `.delta`.
+**Returns:** `list[GradientPoint]` — each with .frame_id, .similarity, .delta.
 
 **Raises:** `RuntimeError` if the store is closed.
 
 ### `store.constitutive_score(chain)`
 
-`1 - jaccard(chain_intermediates, midpoint_NN)` for an ordered frame-ID list. Values below `0.20` indicate the chain carries constitutive information beyond a midpoint search.
+How much a chain says beyond a search at its midpoint: `1 - jaccard(chain_intermediates, midpoint_NN)` for an ordered frame-ID list. Values below `0.20` indicate the chain carries little beyond that search.
 
 ```python
 store.constitutive_score(chain) -> float
@@ -1469,7 +1943,7 @@ store.subtrees(min_size=10) -> list[SubtreeInfo]
 |---|---|---|---|---|
 | `min_size` | `int` | no | `10` | Minimum descendant count. |
 
-**Returns:** `list[SubtreeInfo]` — each with `.root`, `.root_status`, `.descendant_count`, `.eigenframe_count`, `.max_depth`.
+**Returns:** `list[SubtreeInfo]` — each with .root, .root_status, .descendant_count, .eigenframe_count, .max_depth.
 
 **Raises:** `RuntimeError` if the store is closed.
 
@@ -1479,7 +1953,7 @@ store.subtrees(min_size=10) -> list[SubtreeInfo]
 
 ### `store.neighborhood(frame_id, tau=None, hops=1)`
 
-Three-population neighborhood exploration.
+Three-population neighborhood of a frame: its consensus, geometric and lineage neighbours.
 
 ```python
 store.neighborhood(frame_id, tau=None, hops=1) -> NeighborhoodResult
@@ -1499,7 +1973,7 @@ store.neighborhood(frame_id, tau=None, hops=1) -> NeighborhoodResult
 
 ### `store.neighborhood_with_warp(frame_id, targets, suppress, profile="bounded", bound_k=1.5, tau=0.5, hops=1)`
 
-Neighborhood exploration with a warp field applied.
+`neighborhood` with a warp field applied.
 
 ```python
 store.neighborhood_with_warp(frame_id, targets, suppress, profile="bounded", bound_k=1.5, tau=0.5, hops=1) -> NeighborhoodResult
@@ -1510,8 +1984,8 @@ store.neighborhood_with_warp(frame_id, targets, suppress, profile="bounded", bou
 | Name | Type | Required | Default | Description |
 |---|---|---|---|---|
 | `frame_id` | `str` | yes | -- | Center frame ID. |
-| `targets` | `list[tuple[list[float], float]]` | yes | -- | `(embedding, magnitude)` pull pairs. |
-| `suppress` | `list[tuple[list[float], float]]` | yes | -- | `(embedding, magnitude)` suppression pairs. |
+| `targets` | `list[tuple[list[float], float]]` | yes | -- | (embedding, magnitude) pull pairs. |
+| `suppress` | `list[tuple[list[float], float]]` | yes | -- | (embedding, magnitude) suppression pairs. |
 | `profile` | `str` | no | `"bounded"` | `"routing"`, `"saturation"`, or `"bounded"`. |
 | `bound_k` | `float` | no | `1.5` | Suppression-norm cap. |
 | `tau` | `float` | no | `0.5` | Similarity threshold. |
@@ -1520,8 +1994,6 @@ store.neighborhood_with_warp(frame_id, targets, suppress, profile="bounded", bou
 **Returns:** `NeighborhoodResult`.
 
 **Raises:** `RuntimeError` on unrecognized profile, dimension mismatch, or a closed store.
-
-> `NeighborhoodResult` fields: `.consensus`, `.geometric`, `.lineage` (each `list[str]`), `.tau_used`, `.hops_used`. Methods: `.union() -> list[str]`, `.ranked(weight_consensus=2.0, weight_geometric=1.0, weight_lineage=1.0) -> list[str]`, `.divergence() -> dict`.
 
 ---
 
@@ -1542,8 +2014,8 @@ store.apply_warp(query, targets, suppress, profile="bounded", bound_k=1.5) -> li
 | Name | Type | Required | Default | Description |
 |---|---|---|---|---|
 | `query` | `list[float]` | yes | -- | Query vector. |
-| `targets` | `list[tuple[list[float], float]]` | yes | -- | `(embedding, magnitude)` pull pairs. |
-| `suppress` | `list[tuple[list[float], float]]` | yes | -- | `(embedding, magnitude)` suppression pairs. |
+| `targets` | `list[tuple[list[float], float]]` | yes | -- | (embedding, magnitude) pull pairs. |
+| `suppress` | `list[tuple[list[float], float]]` | yes | -- | (embedding, magnitude) suppression pairs. |
 | `profile` | `str` | no | `"bounded"` | `"routing"`, `"saturation"`, or `"bounded"`. |
 | `bound_k` | `float` | no | `1.5` | Suppression-norm cap. |
 
@@ -1553,7 +2025,7 @@ store.apply_warp(query, targets, suppress, profile="bounded", bound_k=1.5) -> li
 
 ### `store.warp_query(query, spec, magnitude_overrides=None)`
 
-Apply a `WarpSpec` to a query (no search) and return the warped vector. `query` is either a text string (auto-encoded) or a pre-computed embedding.
+Apply a warp specification to a query and return the warped vector, without searching.
 
 ```python
 store.warp_query(query, spec, magnitude_overrides=None) -> list[float]
@@ -1563,9 +2035,9 @@ store.warp_query(query, spec, magnitude_overrides=None) -> list[float]
 
 | Name | Type | Required | Default | Description |
 |---|---|---|---|---|
-| `query` | `str \| list[float]` | yes | -- | Text (auto-encoded) or a pre-computed embedding. |
-| `spec` | `WarpSpec` | yes | -- | Warp specification. |
-| `magnitude_overrides` | `dict[str, float] \| None` | no | `None` | Overrides for named magnitudes. |
+| `query` | `list[float] \| str` | yes | -- | Query vector, or on Python a text string that is encoded first. |
+| `spec` | `WarpSpec` | yes | -- | Warp specification; a JSON document on C and Rust. |
+| `magnitude_overrides` | `dict[str, float] \| None` | no | `None` | Per-name overrides of the spec's named magnitudes. |
 
 **Returns:** `list[float]` — the warped query vector.
 
@@ -1595,7 +2067,7 @@ store.calibrate_warp(n_queries=30, n_targets=3, magnitudes=None, top_k=10, seed=
 
 ### `store.calibrate_magnitudes(n_queries=30, n_targets=3, magnitudes=None, top_k=10, seed=42)`
 
-Alias for [`calibrate_warp`](#storecalibrate_warpn_queries30-n_targets3-magnitudesnone-top_k10-seed42) (Python wheel parity).
+Alias for calibrate_warp.
 
 ```python
 store.calibrate_magnitudes(n_queries=30, n_targets=3, magnitudes=None, top_k=10, seed=42) -> WarpCalibration
@@ -1607,9 +2079,9 @@ store.calibrate_magnitudes(n_queries=30, n_targets=3, magnitudes=None, top_k=10,
 |---|---|---|---|---|
 | `n_queries` | `int` | no | `30` | Number of sampled queries. |
 | `n_targets` | `int` | no | `3` | Number of sampled targets. |
-| `magnitudes` | `list[float] \| None` | no | `None` | Magnitudes to sweep. |
+| `magnitudes` | `list[float] \| None` | no | `None` | Magnitudes to sweep; None uses the defaults. |
 | `top_k` | `int` | no | `10` | Hits per probe. |
-| `seed` | `int` | no | `42` | RNG seed. |
+| `seed` | `int` | no | `42` | RNG seed for reproducible sampling. |
 
 **Returns:** `WarpCalibration`.
 
@@ -1617,7 +2089,7 @@ store.calibrate_magnitudes(n_queries=30, n_targets=3, magnitudes=None, top_k=10,
 
 ### `WarpSpec(targets=None, suppress=None, profile="bounded", bound_k=1.5, accumulation="reset")`
 
-Warp specification dataclass.
+Warp specification: what to steer toward and away from, and how. Each `input` is a frame-id `str` or a `list[float]` embedding; each `magnitude` is a `float` or a named-magnitude `str` (`"action_floor"`, `"routing"`, `"sub_saturation"`, `"saturation"`), resolved against the store's warp calibration.
 
 ```python
 WarpSpec(targets=None, suppress=None, profile="bounded", bound_k=1.5, accumulation="reset") -> WarpSpec
@@ -1627,17 +2099,13 @@ WarpSpec(targets=None, suppress=None, profile="bounded", bound_k=1.5, accumulati
 
 | Name | Type | Required | Default | Description |
 |---|---|---|---|---|
-| `targets` | `list[tuple] \| None` | no | `None` | `(input, magnitude)` pull pairs. |
-| `suppress` | `list[tuple] \| None` | no | `None` | `(input, magnitude)` suppression pairs. |
+| `targets` | `list[tuple] \| None` | no | `None` | (input, magnitude) pull pairs. |
+| `suppress` | `list[tuple] \| None` | no | `None` | (input, magnitude) suppression pairs. |
 | `profile` | `str` | no | `"bounded"` | `"routing"`, `"saturation"`, or `"bounded"`. |
 | `bound_k` | `float` | no | `1.5` | Suppression-norm cap. |
 | `accumulation` | `str` | no | `"reset"` | `"reset"` or `"cumulative"`. |
 
-**Returns:** `WarpSpec`. Read-only getters: `.profile`, `.bound_k`, `.accumulation`.
-
-Each `input` is a frame-id `str` or a `list[float]` embedding. Each `magnitude`
-is a `float` or a named-magnitude `str` (`"action_floor"`, `"routing"`,
-`"sub_saturation"`, `"saturation"`).
+**Returns:** `WarpSpec` — read-only getters .profile, .bound_k, .accumulation.
 
 **Raises:** `RuntimeError` on unknown profile/accumulation or malformed input/magnitude.
 
@@ -1665,7 +2133,7 @@ store.density_score(frame_id) -> float
 
 ### `store.seed_margin(frame_id)`
 
-Seed margin: geometric distinctness relative to the corpus centroid.
+Seed margin: a frame's geometric distinctness relative to the corpus centroid.
 
 ```python
 store.seed_margin(frame_id) -> float
@@ -1683,7 +2151,7 @@ store.seed_margin(frame_id) -> float
 
 ### `store.steerability(query_embedding, target_id)`
 
-Warp steerability: angular displacement at routing magnitude.
+Warp steerability: angular displacement of a query toward a target at routing magnitude.
 
 ```python
 store.steerability(query_embedding, target_id) -> float
@@ -1714,7 +2182,7 @@ store.region_health(eigenframe_id) -> RegionHealth
 |---|---|---|---|---|
 | `eigenframe_id` | `str` | yes | -- | Eigenframe ID. |
 
-**Returns:** `RegionHealth` — `.coherence`, `.direction`, `.candidate_split`.
+**Returns:** `RegionHealth` — .coherence, .direction, .candidate_split.
 
 **Raises:** `RuntimeError` if the store is closed.
 
@@ -1722,15 +2190,19 @@ store.region_health(eigenframe_id) -> RegionHealth
 
 Similarity distribution computed from parent-child relationships.
 
+```python
+store.similarity_stats() -> SimilarityDistribution
+```
+
 *No parameters.*
 
-**Returns:** `SimilarityDistribution` — `.count`, `.mean`, `.p75`, `.p90`, `.p95`, `.p99`.
+**Returns:** `SimilarityDistribution` — .count, .mean, .p75, .p90, .p95, .p99.
 
 **Raises:** `RuntimeError` if the store is closed.
 
 ### `store.resolve_tau(tau=None)`
 
-Resolve a tau value: `None` → p95, `"loose"` → p75, `"strict"` → p99, float → passthrough.
+Resolve a tau value against the store's background similarity: `None` gives the p95, `"loose"` the p75, `"strict"` the p99, and a float passes through.
 
 ```python
 store.resolve_tau(tau=None) -> float
@@ -1752,7 +2224,7 @@ store.resolve_tau(tau=None) -> float
 
 ### `store.drift_report(window=20, threshold=0.3)`
 
-Scan eigenframes for semantic drift (children drifting away).
+Scan eigenframes for semantic drift: children drifting away from their eigenframe.
 
 ```python
 store.drift_report(window=20, threshold=0.3) -> list[DriftAlert]
@@ -1789,7 +2261,7 @@ store.contradictions(min_divergence=1.2) -> list[ContradictionCandidate]
 
 ### `store.contradictions_v2(tau=None)`
 
-Three-population contradiction detection.
+Three-population contradiction detection: geometric, lineage and consensus pairs.
 
 ```python
 store.contradictions_v2(tau=None) -> ContradictionReport
@@ -1801,7 +2273,7 @@ store.contradictions_v2(tau=None) -> ContradictionReport
 |---|---|---|---|---|
 | `tau` | `float \| str \| None` | no | `None` | `None` (p95), `"loose"` (p75), `"strict"` (p99), or an explicit float. |
 
-**Returns:** `ContradictionReport` — `.geometric`, `.lineage`, `.consensus` (each `list[ContradictionPair]`).
+**Returns:** `ContradictionReport` — .geometric, .lineage, .consensus (each list[ContradictionPair]).
 
 **Raises:** `RuntimeError` on an invalid `tau` string or a closed store.
 
@@ -1825,7 +2297,7 @@ store.evolution(seed_frame_id) -> list[Frame]
 
 ### `store.evolution_steps(seed_frame_id)`
 
-Rich evolution data: each step carries timestamp, depth, and similarity-to-seed.
+The evolution trajectory from a seed frame as steps, each with its timestamp, depth, similarity to the seed and a snippet.
 
 ```python
 store.evolution_steps(seed_frame_id) -> list[EvolutionStep]
@@ -1837,7 +2309,7 @@ store.evolution_steps(seed_frame_id) -> list[EvolutionStep]
 |---|---|---|---|---|
 | `seed_frame_id` | `str` | yes | -- | Seed frame ID. |
 
-**Returns:** `list[EvolutionStep]` — each with `.frame_id`, `.timestamp`, `.depth`, `.similarity_to_seed`, `.snippet`.
+**Returns:** `list[EvolutionStep]` — each with .frame_id, .timestamp, .depth, .similarity_to_seed, .snippet.
 
 **Raises:** `RuntimeError` if the store is closed.
 
@@ -1859,7 +2331,7 @@ store.merge_candidates(tau=0.92) -> list[MergeCluster]
 |---|---|---|---|---|
 | `tau` | `float` | no | `0.92` | Similarity threshold for candidacy. |
 
-**Returns:** `list[MergeCluster]` — each with `.frame_ids`, `.snippet`, `.count`.
+**Returns:** `list[MergeCluster]` — each with .frame_ids, .snippet, .count.
 
 **Raises:** `RuntimeError` if the store is closed.
 
@@ -1877,7 +2349,7 @@ store.consolidate(frame_ids) -> ConsolidateReport
 |---|---|---|---|---|
 | `frame_ids` | `list[str]` | yes | -- | Frame IDs to consolidate. |
 
-**Returns:** `ConsolidateReport` — `.merged_count`, `.new_frame_id`, `.redirect_frame_ids`, `.superseded_ids`.
+**Returns:** `ConsolidateReport` — .merged_count, .new_frame_id, .redirect_frame_ids, .superseded_ids.
 
 **Raises:** `RuntimeError` if the store is sealed/closed.
 
@@ -1885,9 +2357,13 @@ store.consolidate(frame_ids) -> ConsolidateReport
 
 Auto-detect and consolidate all merge candidates in one pass.
 
+```python
+store.consolidate_all() -> BulkConsolidateReport
+```
+
 *No parameters.*
 
-**Returns:** `BulkConsolidateReport` — `.clusters_merged`, `.total_frames_merged`, `.total_redirects`, `.total_new_frames`.
+**Returns:** `BulkConsolidateReport` — .clusters_merged, .total_frames_merged, .total_redirects, .total_new_frames.
 
 **Raises:** `RuntimeError` if the store is sealed/closed.
 
@@ -1927,9 +2403,9 @@ store.declare_relation(name, flags=1) -> int
 | Name | Type | Required | Default | Description |
 |---|---|---|---|---|
 | `name` | `str` | yes | -- | Relation name (e.g. `"references"`, `"contradicts"`). |
-| `flags` | `int` | no | `1` (`0x01`, Active) | Relation flag bitfield (see `RelationFlags`). |
+| `flags` | `int` | no | `1` | Relation flag bitfield (see `RelationFlags`); `1` is Active. |
 
-**Returns:** `int` — the slot ID (`u16`).
+**Returns:** `int` — the slot ID (u16).
 
 **Raises:** `RuntimeError` on duplicate name or a closed store.
 
@@ -1937,9 +2413,13 @@ store.declare_relation(name, flags=1) -> int
 
 List all declared relation types.
 
+```python
+store.list_relations() -> list[RelationDef]
+```
+
 *No parameters.*
 
-**Returns:** `list[RelationDef]` — each with `.slot`, `.name`, `.flags`, `.builtin`, `.active`, `.deprecated` (and methods `.is_active()`, `.is_deprecated()`, `.is_bidirectional()`, `.provenance_required()`).
+**Returns:** `list[RelationDef]` — each with .slot, .name, .flags, .builtin, .active, .deprecated.
 
 **Raises:** `RuntimeError` if the store is closed.
 
@@ -1986,11 +2466,7 @@ store.retract_relation(from_id, to_id, relation) -> None
 
 ### `store.sim_neighbors(frame_id)`
 
-Similarity neighbours of a frame — the **live** edge set.
-
-Includes edges other frames aimed at this one, so it is the traversable
-neighbourhood rather than the frame's own choice. For that, see
-`store.committed_sim_edges`.
+Similarity neighbours of a frame: the live edge set. Includes edges other frames aimed at this one, so it is the traversable neighbourhood rather than the frame's own choice; for that, see `committed_sim_edges`.
 
 ```python
 store.sim_neighbors(frame_id) -> list[tuple[str, float]]
@@ -2002,19 +2478,13 @@ store.sim_neighbors(frame_id) -> list[tuple[str, float]]
 |---|---|---|---|---|
 | `frame_id` | `str` | yes | -- | Frame whose neighbours to list. |
 
-**Returns:** `list[tuple[str, float]]` — `(frame_id, weight)` pairs; empty for an unknown frame.
+**Returns:** `list[tuple[str, float]]` — (frame_id, weight) pairs; empty for an unknown frame.
 
 **Raises:** `RuntimeError` on a closed store.
 
 ### `store.committed_sim_edges(frame_id)`
 
-The similarity neighbours this frame **chose at commit time**, resolved to ids.
-
-Provenance rather than topology: what the frame decided against the store as it
-stood, not what accumulated around it afterwards. Always a subset of
-`store.sim_neighbors`. Returns `None` for a frame written before the choice was
-recorded — recovering those requires a replay, so stores built before the
-similarity choice was persisted will answer `None` throughout.
+The similarity neighbours this frame chose when it was committed, resolved to ids. Always a subset of `sim_neighbors`. `None` for a frame written before the choice was recorded.
 
 ```python
 store.committed_sim_edges(frame_id) -> list[tuple[str, float]] | None
@@ -2026,13 +2496,13 @@ store.committed_sim_edges(frame_id) -> list[tuple[str, float]] | None
 |---|---|---|---|---|
 | `frame_id` | `str` | yes | -- | Frame whose committed choice to read. |
 
-**Returns:** `list[tuple[str, float]]` — `(frame_id, weight)` pairs — or `None` if the frame predates the recording.
+**Returns:** `list[tuple[str, float]] | None` — (frame_id, weight) pairs; None if the frame predates the recording.
 
 **Raises:** `RuntimeError` on a closed store.
 
 ### `store.structural_neighbors(frame_id, relations, direction="outgoing")`
 
-Find neighbors via typed edges.
+Find neighbours via typed edges.
 
 ```python
 store.structural_neighbors(frame_id, relations, direction="outgoing") -> list[StructuralHit]
@@ -2046,13 +2516,13 @@ store.structural_neighbors(frame_id, relations, direction="outgoing") -> list[St
 | `relations` | `list[str]` | yes | -- | Relation names to traverse. |
 | `direction` | `str` | no | `"outgoing"` | `"outgoing"`, `"incoming"`, or `"both"`. |
 
-**Returns:** `list[StructuralHit]` — each with `.frame_id`, `.relation_slot`, `.weight`, `.direction`.
+**Returns:** `list[StructuralHit]` — each with .frame_id, .relation_slot, .weight, .direction.
 
 **Raises:** `RuntimeError` on an invalid direction or a closed store.
 
 ### `store.structural_expand(hits, relations, direction="outgoing", score_combine="keep_input")`
 
-Pipeline composition: expand an existing `(frame_id, score)` hit list by one hop along structural relations.
+Expand an existing (frame_id, score) hit list by one hop along structural relations.
 
 ```python
 store.structural_expand(hits, relations, direction="outgoing", score_combine="keep_input") -> list[tuple[str, float]]
@@ -2062,7 +2532,7 @@ store.structural_expand(hits, relations, direction="outgoing", score_combine="ke
 
 | Name | Type | Required | Default | Description |
 |---|---|---|---|---|
-| `hits` | `list[tuple[str, float]]` | yes | -- | Input `(frame_id, score)` hits. |
+| `hits` | `list[tuple[str, float]]` | yes | -- | Input (frame_id, score) hits. |
 | `relations` | `list[str]` | yes | -- | Relation names to traverse. |
 | `direction` | `str` | no | `"outgoing"` | `"outgoing"`, `"incoming"`, or `"both"`. |
 | `score_combine` | `str` | no | `"keep_input"` | `"multiply"`, `"min"`, `"max"`, or `"keep_input"`. |
@@ -2073,7 +2543,7 @@ store.structural_expand(hits, relations, direction="outgoing", score_combine="ke
 
 ### `store.filter_by_relation(hits, relations, direction="outgoing", require_present=True)`
 
-Filter a `(frame_id, score)` hit list to those participating in any of the given relations.
+Filter a (frame_id, score) hit list to those participating in any of the given relations.
 
 ```python
 store.filter_by_relation(hits, relations, direction="outgoing", require_present=True) -> list[tuple[str, float]]
@@ -2083,10 +2553,10 @@ store.filter_by_relation(hits, relations, direction="outgoing", require_present=
 
 | Name | Type | Required | Default | Description |
 |---|---|---|---|---|
-| `hits` | `list[tuple[str, float]]` | yes | -- | Input `(frame_id, score)` hits. |
+| `hits` | `list[tuple[str, float]]` | yes | -- | Input (frame_id, score) hits. |
 | `relations` | `list[str]` | yes | -- | Relation names. |
 | `direction` | `str` | no | `"outgoing"` | `"outgoing"`, `"incoming"`, or `"both"`. |
-| `require_present` | `bool` | no | `True` | Keep hits participating in the relation (`True`) vs. excluding them. |
+| `require_present` | `bool` | no | `True` | Keep hits participating in the relation (`True`) or exclude them. |
 
 **Returns:** `list[tuple[str, float]]`.
 
@@ -2094,7 +2564,7 @@ store.filter_by_relation(hits, relations, direction="outgoing", require_present=
 
 ### `SeraphStore.intersect_hits(a, b)`
 
-Static helper: intersect two `(frame_id, score)` hit lists, keeping the min score per shared frame.
+Intersect two (frame_id, score) hit lists, keeping the lower score for each shared frame.
 
 ```python
 SeraphStore.intersect_hits(a, b) -> list[tuple[str, float]]
@@ -2113,7 +2583,7 @@ SeraphStore.intersect_hits(a, b) -> list[tuple[str, float]]
 
 ### `SeraphStore.union_hits(a, b)`
 
-Static helper: union two `(frame_id, score)` hit lists, keeping the max score per frame.
+Union two (frame_id, score) hit lists, keeping the higher score for each frame.
 
 ```python
 SeraphStore.union_hits(a, b) -> list[tuple[str, float]]
@@ -2146,9 +2616,9 @@ store.snapshot(at_timestamp_us) -> SnapshotView
 
 | Name | Type | Required | Default | Description |
 |---|---|---|---|---|
-| `at_timestamp_us` | `int` | yes | -- | Point-in-time, microseconds. |
+| `at_timestamp_us` | `int` | yes | -- | Point in time, microseconds since the epoch. |
 
-**Returns:** `SnapshotView` — `.frame_ids`, `.timestamp`.
+**Returns:** `SnapshotView` — .frame_ids, .timestamp.
 
 **Raises:** `RuntimeError` if the store is closed.
 
@@ -2168,7 +2638,7 @@ store.snapshot_search(snapshot, query_embedding, top_k) -> list[tuple[str, float
 | `query_embedding` | `list[float]` | yes | -- | Query vector. |
 | `top_k` | `int` | yes | -- | Maximum number of results. |
 
-**Returns:** `list[tuple[str, float]]` — `(frame_id, score)` tuples.
+**Returns:** `list[tuple[str, float]]` — (frame_id, score) tuples.
 
 **Raises:** `RuntimeError` if the store is closed.
 
@@ -2180,39 +2650,79 @@ store.snapshot_search(snapshot, query_embedding, top_k) -> list[tuple[str, float
 
 Whether the store has been sealed (read-only). All tiers can open and read sealed stores.
 
+```python
+store.is_sealed() -> bool
+```
+
 *No parameters.*
 
 **Returns:** `bool`.
 
 **Raises:** `RuntimeError` if the store is closed.
 
-### `store.seal(reason=None)`
+### `store.seal(reason=None, anchor_backend=None, anchor_token=None)`
 
-> **Requires Commercial or Enterprise license.** Free-tier calls raise `RuntimeError`.
-
-Seal the store; no further writes are accepted.
+Seal the store: commit a final sentinel and refuse further writes. The seal records the order digest of every frame before it (see `order_digest`), so `verify` detects any frame reordered, removed or added before the seal, and any frame after it. To anchor the seal externally: stop writing, take `order_digest()`, anchor its 32 bytes with your backend, then seal with `anchor_backend` and `anchor_token`; the engine records the token and never contacts the backend. Requires Commercial or higher.
 
 ```python
-store.seal(reason=None) -> str
+store.seal(reason=None, anchor_backend=None, anchor_token=None) -> str
 ```
 
 **Parameters**
 
 | Name | Type | Required | Default | Description |
 |---|---|---|---|---|
-| `reason` | `str \| None` | no | `None` | Optional seal reason. |
+| `reason` | `str \| None` | no | `None` | Free-text reason recorded in the seal. |
+| `anchor_backend` | `str \| None` | no | `None` | Anchor backend name (e.g. `"opentimestamps"`, `"rfc3161"`). |
+| `anchor_token` | `bytes \| None` | no | `None` | The backend's token over the order digest. |
 
-**Returns:** `str` — the seal frame ID.
+**Returns:** `str` — the seal sentinel frame ID.
 
-**Raises:** `RuntimeError` on Free tier or a closed store.
+**Raises:** `RuntimeError` if the store is already sealed or the tier does not support sealing; `ValueError` if only one of `anchor_backend` / `anchor_token` is given.
+
+### `store.order_digest(through_frame_id=None)`
+
+The digest to anchor: a running SHA-256 over the watermarks in commit order (`d0 = SHA256("SERAPH:ORDER:v1")`, `d_i = SHA256(d_{i-1} || watermark_i)`), through `through_frame_id` or the whole store. From format 4 a watermark binds a frame's content, lineage, id, commit time and committed edges, so the 32 bytes fix all of them and their order. Anchor them, then record the token with `append_tip_anchor` or `seal`.
+
+```python
+store.order_digest(through_frame_id=None) -> tuple[int, bytes]
+```
+
+**Parameters**
+
+| Name | Type | Required | Default | Description |
+|---|---|---|---|---|
+| `through_frame_id` | `str \| None` | no | `None` | Last frame covered; `None` for the whole log. |
+
+**Returns:** `tuple[int, bytes]` — (frame_count, digest).
+
+**Raises:** `RuntimeError` if the frame is not found or the store is closed.
+
+### `store.anchor_claims()`
+
+Every seal and tip anchor that commits to an order digest. `verify` checks each claim's digest against the log; the token is checked against the claim's `digest` by your anchor backend, directly or through `verify_attestation(anchor_verifier=...)`.
+
+```python
+store.anchor_claims() -> list[AnchorClaim]
+```
+
+*No parameters.*
+
+**Returns:** `list[AnchorClaim]`.
+
+**Raises:** `RuntimeError` if the store is closed.
 
 ### `store.writer_audit()`
 
 Audit writer attribution across all frames.
 
+```python
+store.writer_audit() -> WriterAudit
+```
+
 *No parameters.*
 
-**Returns:** `WriterAudit` — `.writers`, `.genesis_customer_uuid`, `.cross_customer_writes`, `.unsigned_frame_count`, `.sealed`, `.seal_frame_id`.
+**Returns:** `WriterAudit` — .writers, .genesis_customer_uuid, .cross_customer_writes, .unsigned_frame_count, .sealed, .seal_frame_id.
 
 **Raises:** `RuntimeError` if the store is closed.
 
@@ -2229,28 +2739,20 @@ store.verify_attestation(public_key_resolver=None, anchor_verifier=None, verify_
 | Name | Type | Required | Default | Description |
 |---|---|---|---|---|
 | `public_key_resolver` | `callable \| None` | no | `None` | `(signing_key_id: str) -> bytes`. Accepted for parity but not consulted by the default check. |
-| `anchor_verifier` | `callable \| None` | no | `None` | `(backend: str, token: bytes, payload: bytes) -> bool`. When supplied, drives the `.anchor` field. |
+| `anchor_verifier` | `callable \| None` | no | `None` | `(backend: str, token: bytes, payload: bytes) -> bool`. When supplied, drives the `.anchor` field: called for the genesis anchor and for every seal and tip anchor with a token (payload: that claim's 32-byte order digest). |
 | `verify_operator_identity` | `bool` | no | `True` | When `False`, skips operator-identity signature checks. |
 
-**Returns:** `AttestationAudit` — see [Types Reference](#types-reference).
+**Returns:** `AttestationAudit`.
 
 **Raises:** `RuntimeError` if the store is closed.
 
 ### `store.content_set_root()`
 
-Order-free commitment to the store's retrievable content. Leaf =
-`sha256(content_hash || codes)` per active-content frame (the packed 4-bit
-codes are the canonical persisted embedding on a v3 store; pre-v3 frames use
-their packed fine quant); root =
-`sha256("seraph-content-set/v1|<model_id>|<dim>|<n>" || sorted leaves)`.
+An order-free fingerprint of the store's retrievable content: sha256 over the sorted per-frame leaves `sha256(content_hash || codes)` under the header `"seraph-content-set/v1|<model_id>|<dim>|<n>"`. Two stores holding the same content under the same model give the same root regardless of commit order or graph. It ranges over every frame search can return; markers, redirects and superseded frames are excluded, and it is recomputable from the frame log alone.
 
-Two stores holding the same content under the same model produce the same root
-regardless of commit order, eigenframe set or graph — it commits to exactly
-what retrieval is a function of at a reach-complete `tau`. It ranges over every
-frame search can return (`Active`, `Eigenframe`, `Seed`, `Genesis` — the
-`is_active_content()` set); System markers, redirects and superseded frames are
-excluded. Recomputable from the frame log alone; `tools/attest_retrieval.py
-commit` cross-checks it independently.
+```python
+store.content_set_root() -> str
+```
 
 *No parameters.*
 
@@ -2262,6 +2764,10 @@ commit` cross-checks it independently.
 
 Raw genesis seed bytes (v2-attested stores only).
 
+```python
+store.genesis_seed() -> bytes | None
+```
+
 *No parameters.*
 
 **Returns:** `bytes | None`.
@@ -2272,15 +2778,19 @@ Raw genesis seed bytes (v2-attested stores only).
 
 Genesis attestation header as a JSON string.
 
+```python
+store.genesis_attestation() -> str | None
+```
+
 *No parameters.*
 
-**Returns:** `str | None` — `None` for legacy stores.
+**Returns:** `str | None` — None for legacy stores.
 
 **Raises:** `RuntimeError` if the store is closed.
 
 ### `seraph.verify_chain(frames, genesis_seed=None)`
 
-Module-level helper. Verify watermark-chain integrity across an ordered list of `Frame` objects (parent → child order).
+Verify watermark-chain integrity across an ordered list of Frame objects, parent before child, without a store. A store checks itself with verify.
 
 ```python
 seraph.verify_chain(frames, genesis_seed=None) -> tuple[bool, str | None]
@@ -2290,25 +2800,19 @@ seraph.verify_chain(frames, genesis_seed=None) -> tuple[bool, str | None]
 
 | Name | Type | Required | Default | Description |
 |---|---|---|---|---|
-| `frames` | `list[Frame]` | yes | -- | Frames in parent → child order. |
-| `genesis_seed` | `bytes \| None` | no | `None` | Supply for v2-attested stores; omit to use the default `GENESIS_SEED_V1`. |
+| `frames` | `list[Frame]` | yes | -- | Frames in parent-to-child order. |
+| `genesis_seed` | `bytes \| None` | no | `None` | Genesis seed of an attested store; None uses the default seed. |
 
-**Returns:** `tuple[bool, str | None]` — `(is_valid, first_failing_frame_id)`.
+**Returns:** `tuple[bool, str | None]` — (is_valid, first failing frame ID).
 
 **Raises:** Does not raise (returns the failure tuple instead).
 
-### `seraph.migrate_store(src_path, dst_path)`
+### `seraph.migrate_store(src_path, dst_path, config=None)`
 
-Rebuild a store's topology while preserving everything else. Every frame is re-committed into a fresh store at `dst_path` with its identity intact — same frame id, timestamp, content, embedding, metadata, `status_ref` and `status_sources` — but with its parent selected against the live destination. The GIL is released for the whole migration.
-
-Preserving ids is what makes this a migration rather than a rebuild: typed-edge sentinels, supersede sentinels and redirect targets all reference frames by id, so they stay valid without remapping and reconstruct on the destination's first open.
-
-Use it to correct a topology built by an older parent-selection strategy or by the two-phase batch path, and as the carrier for frame-format changes — the destination is always created at the current format version. Embeddings are carried verbatim; this does **not** re-encode, and a destination model mismatch is rejected. Use `reencode_store` when the embeddings themselves must change.
-
-Eigenframe status is deliberately not carried: source eigenframes are committed as `Active` so the destination promotes on its own geometry. Watermarks are recomputed from each frame's new parent, so they differ from the source by construction; the destination chain is internally valid and `verify()` passes.
+Rebuild a store into a fresh one at `dst_path`: every frame is re-committed with its identity intact (id, timestamp, content, embedding, metadata, status references) and its parent chosen against the live destination, so sentinels and redirects that name frames by id stay valid. Use it to correct an old topology or to carry a store to the current format or another `vector_precision` (`config`). Embeddings are carried as they are; use `reencode_store` to change them. Watermarks are recomputed, so they differ from the source; the destination verifies. Free function; the Python binding releases the GIL for the whole migration.
 
 ```python
-seraph.migrate_store(src_path, dst_path) -> dict
+seraph.migrate_store(src_path, dst_path, config=None) -> dict[str, int]
 ```
 
 **Parameters**
@@ -2317,8 +2821,9 @@ seraph.migrate_store(src_path, dst_path) -> dict
 |---|---|---|---|---|
 | `src_path` | `str` | yes | -- | Source `.sfg` path. Opened read-only. |
 | `dst_path` | `str` | yes | -- | Destination `.sfg` path. Created fresh. |
+| `config` | `StoreConfig \| None` | no | `None` | Destination configuration (its `vector_precision` re-cuts the store). `None` inherits the source's at the current format version. |
 
-**Returns:** `dict[str, int]` with keys `content`, `seeds`, `sentinels`, `superseded`, `redirects`, `skipped`, `on_genesis`. A high `on_genesis` relative to `content` indicates a star rather than a tree.
+**Returns:** `dict[str, int]` — keys content, seeds, sentinels, superseded, redirects, skipped, on_genesis; a high on_genesis relative to content indicates a star rather than a tree.
 
 **Raises:** `RuntimeError` if the source cannot be opened or the destination model does not match the source.
 
@@ -2331,9 +2836,7 @@ report = seraph.migrate_store("old.sfg", "new.sfg")
 
 ### `seraph.reencode_store(src_path, dst_path, model_id, eigen_threshold, n_max=0, pbatch=2000, ebatch=16)`
 
-Module-level bulk builder. Stream every active-content frame out of the store at `src_path`, re-encode it with `model_id`, and ingest the fresh embeddings into a new TurboQuant store at `dst_path` — entirely in Rust, with the GIL released for the whole build. Encode (GPU) overlaps ingest (CPU) on native threads and embeddings never cross the Python boundary, so throughput approaches the raw encode ceiling instead of serializing the two. The `.gidx` sidecar is not written. Each frame records the similarity neighbours it committed to, so the destination's first open reads them back rather than re-deriving them: opening a bare `.sfg` costs the frame-log parse, not a commit-time walk per frame. (Before frames carried that record, reconstruction meant re-running the walk — measured at 2,735 µs/frame, roughly 41 minutes at 900k.)
-
-Frames are ingested in source commit order, each parent selected against the live destination, so the rebuilt store carries a properly built parent tree following the source's own accumulation order. `pbatch` therefore controls buffering only, not topology.
+Build a fresh store from the content of an existing one, re-encoding every frame with a new model. Frames are ingested in source commit order, so the destination's topology is the one a per-frame ingest would produce.
 
 ```python
 seraph.reencode_store(src_path, dst_path, model_id, eigen_threshold, n_max=0, pbatch=2000, ebatch=16) -> int
@@ -2343,15 +2846,15 @@ seraph.reencode_store(src_path, dst_path, model_id, eigen_threshold, n_max=0, pb
 
 | Name | Type | Required | Default | Description |
 |---|---|---|---|---|
-| `src_path` | `str` | yes | -- | Path to the source `.sfg` store to re-encode from. |
-| `dst_path` | `str` | yes | -- | Path to the destination store to create (overwritten if it exists). |
-| `model_id` | `str` | yes | -- | Embedding model for the destination store (fixed at genesis). |
-| `eigen_threshold` | `int` | yes | -- | In-degree threshold for eigenframe promotion in the destination. |
-| `n_max` | `int` | no | `0` | Cap on frames ingested (`0` = all). |
-| `pbatch` | `int` | no | `2000` | Frames per ingest batch (`put_batch_incremental`). |
-| `ebatch` | `int` | no | `16` | Encoder batch size (content chunks per encode call). |
+| `src_path` | `str` | yes | -- | Source .sfg path. |
+| `dst_path` | `str` | yes | -- | Destination .sfg path; must not exist. |
+| `model_id` | `str` | yes | -- | Model to encode with; becomes the destination's model. |
+| `eigen_threshold` | `int` | yes | -- | Eigenframe promotion threshold for the destination. |
+| `n_max` | `int` | no | `0` | Stop after this many frames; 0 means all. |
+| `pbatch` | `int` | no | `2000` | Write buffering batch size; does not affect topology. |
+| `ebatch` | `int` | no | `16` | Encode batch size. |
 
-**Returns:** `int` — number of frames ingested into the destination store.
+**Returns:** `int` — frames ingested into the destination.
 
 **Raises:** `RuntimeError` if the source cannot be opened, the destination cannot be created, or encoding fails.
 
@@ -2361,9 +2864,7 @@ seraph.reencode_store(src_path, dst_path, model_id, eigen_threshold, n_max=0, pb
 
 ### `store.append_tip_anchor(backend_name, anchor_token, tip_frame_id, status, supersedes=None)`
 
-> **Requires Commercial or Enterprise license.** Free-tier calls raise `RuntimeError`.
-
-Append a trusted-time anchor record to the chain tip.
+Append a trusted-time anchor record to the chain tip. Requires a Commercial or Enterprise license.
 
 ```python
 store.append_tip_anchor(backend_name, anchor_token, tip_frame_id, status, supersedes=None) -> str
@@ -2395,7 +2896,7 @@ store.list_tip_anchors(resolved=False) -> list[str]
 
 | Name | Type | Required | Default | Description |
 |---|---|---|---|---|
-| `resolved` | `bool` | no | `False` | Whether to return only resolved anchors. |
+| `resolved` | `bool` | no | `False` | Return only resolved anchors. |
 
 **Returns:** `list[str]` — JSON strings.
 
@@ -2407,7 +2908,7 @@ store.list_tip_anchors(resolved=False) -> list[str]
 
 ### `store.subscribe(event_name, callback)`
 
-Subscribe to substrate events. The callback is invoked synchronously with the matching payload object.
+Alias for on: subscribe a callback to a store event. The callback receives the matching event payload object.
 
 ```python
 store.subscribe(event_name, callback) -> int
@@ -2417,10 +2918,10 @@ store.subscribe(event_name, callback) -> int
 
 | Name | Type | Required | Default | Description |
 |---|---|---|---|---|
-| `event_name` | `str` | yes | -- | `"promote"`, `"contradiction"`, `"drift"`, `"consolidation"`, `"milestone"`, or `"*"`. |
-| `callback` | `callable` | yes | -- | Callable receiving one payload object. |
+| `event_name` | `str` | yes | -- | Event name to subscribe to. |
+| `callback` | `Callable` | yes | -- | Called with the event payload object. |
 
-**Returns:** `int` — subscriber ID.
+**Returns:** `int` — subscriber ID, for unsubscribe.
 
 **Raises:** `RuntimeError` if the store is closed. Callback exceptions are caught and printed to stderr; they do not interrupt the engine.
 
@@ -2435,7 +2936,7 @@ store.subscribe(event_name, callback) -> int
 
 ### `store.on(event_name, callback)`
 
-Alias for [`subscribe`](#storesubscribeevent_name-callback).
+Subscribe a callback to a store event (promote, drift, contradiction, consolidate, milestone); `on` is an alias of `subscribe`.
 
 ```python
 store.on(event_name, callback) -> int
@@ -2445,7 +2946,7 @@ store.on(event_name, callback) -> int
 
 | Name | Type | Required | Default | Description |
 |---|---|---|---|---|
-| `event_name` | `str` | yes | -- | Event name (see `subscribe`). |
+| `event_name` | `str` | yes | -- | Event name. |
 | `callback` | `callable` | yes | -- | Callable receiving one payload object. |
 
 **Returns:** `int` — subscriber ID.
@@ -2454,7 +2955,7 @@ store.on(event_name, callback) -> int
 
 ### `store.unsubscribe(subscriber_id)`
 
-Detach a subscriber by ID.
+Detach an event subscriber by ID.
 
 ```python
 store.unsubscribe(subscriber_id) -> bool
@@ -2464,15 +2965,19 @@ store.unsubscribe(subscriber_id) -> bool
 
 | Name | Type | Required | Default | Description |
 |---|---|---|---|---|
-| `subscriber_id` | `int` | yes | -- | ID returned by `subscribe`/`on`. |
+| `subscriber_id` | `int` | yes | -- | ID returned by subscribe. |
 
-**Returns:** `bool` — `True` if it was present.
+**Returns:** `bool` — whether the subscriber was present.
 
 **Raises:** `RuntimeError` if the store is closed.
 
 ### `store.subscriber_count()`
 
 Number of active subscribers.
+
+```python
+store.subscriber_count() -> int
+```
 
 *No parameters.*
 
@@ -2486,7 +2991,7 @@ Number of active subscribers.
 
 ### `store.encode(text)`
 
-Encode text into a normalized embedding via the store's model. Lazily loads the encoder on first call.
+Encode text with the store's own model into a normalized embedding. The encoder loads on first use and is kept for later calls.
 
 ```python
 store.encode(text) -> list[float]
@@ -2504,7 +3009,7 @@ store.encode(text) -> list[float]
 
 ### `store.encode_batch(texts)`
 
-Batch-encode multiple texts via the store's model (GPU-batched forward pass).
+Encode many texts with the store's own model in one batched pass.
 
 ```python
 store.encode_batch(texts) -> list[list[float]]
@@ -2522,10 +3027,7 @@ store.encode_batch(texts) -> list[list[float]]
 
 ### `store.quantize_query(embedding)`
 
-The query the engine actually walks with: `embedding` after a round trip
-through the store's write quantizer. On a v3 store this is what every scoring
-path sees, so a caller reproducing scores outside the engine should use it
-instead of the raw vector. Identity on pre-v3 stores.
+The query vector exactly as the store scores it: the embedding after a round trip through the store's vector precision. Use it to reproduce scores outside the engine.
 
 ```python
 store.quantize_query(embedding) -> list[float]
@@ -2535,7 +3037,7 @@ store.quantize_query(embedding) -> list[float]
 
 | Name | Type | Required | Default | Description |
 |---|---|---|---|---|
-| `embedding` | `list[float]` | yes | -- | Query embedding, length `store.dim()`. |
+| `embedding` | `list[float]` | yes | -- | Query vector of the store's dimension. |
 
 **Returns:** `list[float]`.
 
@@ -2543,10 +3045,7 @@ store.quantize_query(embedding) -> list[float]
 
 ### `store.encode_codes(embedding)`
 
-The packed 4-bit codes the store would persist for `embedding` — the bytes
-`Frame.codes` would carry if this vector were ingested, and the bytes
-`content_set_root` hashes. Lets a caller build a leaf for content it has not
-ingested.
+The packed 4-bit codes the store would persist for an embedding: the bytes a frame's codes carry and content_set_root hashes. Lets a caller build a leaf for content it has not ingested.
 
 ```python
 store.encode_codes(embedding) -> bytes
@@ -2556,15 +3055,15 @@ store.encode_codes(embedding) -> bytes
 
 | Name | Type | Required | Default | Description |
 |---|---|---|---|---|
-| `embedding` | `list[float]` | yes | -- | Embedding, length `store.dim()`. |
+| `embedding` | `list[float]` | yes | -- | Vector of the store's dimension. |
 
-**Returns:** `bytes` — empty on a pre-v3 store or a dimension mismatch.
+**Returns:** `bytes` — empty on a dimension mismatch or a store that keeps no 4-bit codes.
 
 **Raises:** `RuntimeError` if the store is closed.
 
 ### `Encoder(model_dir)`
 
-Standalone pure-Rust encoder from a local model directory.
+A standalone encoder loaded from a local model directory. `from_pretrained` loads one by model ID instead.
 
 ```python
 Encoder(model_dir) -> Encoder
@@ -2582,7 +3081,7 @@ Encoder(model_dir) -> Encoder
 
 ### `Encoder.from_pretrained(model_id)`
 
-Load an encoder from the HuggingFace Hub by model ID (downloads + caches) (static method).
+Load an encoder by model ID, downloading and caching the model files on first use.
 
 ```python
 Encoder.from_pretrained(model_id) -> Encoder
@@ -2598,23 +3097,17 @@ Encoder.from_pretrained(model_id) -> Encoder
 
 **Raises:** `RuntimeError` if the model cannot be downloaded/loaded.
 
-**Encoder instance API:**
-
-| Member | Type | Description |
-|---|---|---|
-| `.encode(text)` | `(str) -> list[float]` | Encode a single text (mean-pooled, L2-normalized). |
-| `.encode_batch(texts)` | `(list[str]) -> list[list[float]]` | Batch encode. |
-| `.dim` | getter `-> int` | Embedding dimensionality. |
-| `.model_id` | getter `-> str \| None` | Model identifier. |
-| `.modality` | getter `-> str` | `"text"`, `"image"`, `"audio"`, or `"multimodal"`. |
-
 ---
 
 ## Batch Operations
 
 ### `store.begin_batch()`
 
-Begin a buffered write batch. Subsequent writes skip per-frame WAL + fsync until `commit()` (enables true batch mode with a single fsync at commit time).
+Begin a buffered write batch. Writes skip the per-frame WAL and fsync until commit, which flushes once.
+
+```python
+store.begin_batch() -> None
+```
 
 *No parameters.*
 
@@ -2624,7 +3117,11 @@ Begin a buffered write batch. Subsequent writes skip per-frame WAL + fsync until
 
 ### `store.commit()`
 
-Flush all buffered writes to disk and re-enable per-write fsync.
+End a buffered write batch: flush every buffered write to disk and restore per-write durability.
+
+```python
+store.commit() -> None
+```
 
 *No parameters.*
 
@@ -2687,9 +3184,11 @@ All types below are registered PyO3 classes (verified against `py.rs` getters).
 | `Frame` | `.id`, `.parent_id`, `.status`, `.content`, `.embedding`, `.metadata` (dict), `.metadata_json` (str), `.watermark`, `.content_hash`, `.codes` (bytes; packed 4-bit codes, empty on pre-v3 frames), `.in_degree`, `.model_id`, `.timestamp`, `.status_ref`, `.status_sources`, `.customer_uuid`, `.writer_signature`, `.snippet`; methods `.is_active_content()`, `.is_consolidation_exempt()`, `.is_eigenframe()`, `.is_redirect()` |
 | `Hit` | `.frame_id`, `.score`, `.confidence`, `.path_length`, `.snippet`, `.content`, `.frame` |
 | `TraceEntry` | `.frame_id`, `.depth`, `.score`, `.visit_order`, `.source`, `.parent_id` |
-| `Chain` | `.frames`, `.frame_ids`, `.primitive`, `.segments`, `.coherence` |
+| `History` | `.hits` (list of `HistoryHit`, oldest first), `.anchors` (search hits that chose the trees), `.doors` (the frames the lineages were entered at), `.visits` |
+| `HistoryHit` | `.frame_id`, `.score` (raw cosine), `.timestamp` (commit time, us since epoch), `.depth` (steps from its door), `.path` (route from the door, door first) |
+| `Chain` | `.frames`, `.frame_ids`, `.primitive`, `.segments`, `.coherence`, `.reached` (`False` when no route was found within the visit budget; the path then ends at the nearest frame reached); `.primitive` is `"geodesic"` (`"geodesic_forward"` from `chain_forward`) |
 | `Segment` | `.frames`, `.frame_ids`, `.primitive`, `.transition_reason` |
-| `ChainCoherence` | `.mean_gradient`, `.min_gradient`, `.fragmentation_events`, `.pass_strict`, `.pass_loose` |
+| `ChainCoherence` | `.mean_gradient`, `.min_gradient`, `.fragmentation_events`, `.pass_strict`, `.pass_loose`, `.stretch` (route length over the direct distance between its ends; 1 = direct) |
 | `StoreConfig` | (constructor fields above; all readable/writable) |
 | `StoreStats` | `.total_frames`, `.active_frames`, `.eigenframes`, `.seeds`, `.redirects`, `.superseded`, `.model_id` |
 | `QuantizationRange` | `.model_id`, `.low`, `.high`, `.dim` |
@@ -2715,6 +3214,8 @@ All types below are registered PyO3 classes (verified against `py.rs` getters).
 | `GradientPoint` | `.frame_id`, `.similarity`, `.delta` |
 | `WriterAudit` | `.writers`, `.genesis_customer_uuid`, `.cross_customer_writes`, `.unsigned_frame_count`, `.sealed`, `.seal_frame_id` |
 | `AttestationAudit` | `.chain_valid`, `.genesis_seed_matches`, `.anchor`, `.secure_mode`, `.sealed`, `.writers`, `.cross_customer_writes`, `.unsigned_frame_count`, `.invalid_signature_count`, `.post_seal_frame_count`, `.all_ok`, `.failures` |
+| `Connection` | `.chain` (`Chain`), `.bridge` (frame id or `None` for a direct edge) |
+| `AnchorClaim` | `.kind` (`"seal"` \| `"tip"`), `.sentinel_id`, `.frame_count`, `.digest` (32 bytes the token must bind), `.backend`, `.token` |
 | `WarpSpec` | `.profile`, `.bound_k`, `.accumulation` (read-only getters) |
 | `WarpCalibration` | `.dim`, `.model_id`, `.n_queries`, `.n_targets`, `.sweep`, `.action_floor`, `.routing`, `.sub_saturation`, `.saturation`, `.recommended_bound_k`; methods `.summary()`, `.as_named_magnitudes()` |
 | `WarpCalibrationPoint` | `.magnitude`, `.mean_jaccard`, `.std_jaccard`, `.mean_hits`, `.zero_result_pct` |

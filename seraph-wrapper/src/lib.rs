@@ -93,6 +93,18 @@ extern "C" {
         include_superseded: bool,
         out_hits: *mut *mut FfiHit, out_count: *mut usize,
     ) -> i32;
+    fn seraph_store_search_stream(
+        handle: *mut c_void,
+        embedding: *const f32, embedding_len: usize,
+        top_k: usize, tau: f32,
+        beam_width: usize, max_visits: usize,
+        out_hits: *mut *mut FfiHit, out_count: *mut usize,
+    ) -> i32;
+    fn seraph_store_search_with_trace(
+        handle: *mut c_void,
+        embedding: *const f32, embedding_len: usize,
+        top_k: usize, tau: f32,
+    ) -> *mut c_char;
     fn seraph_store_search_temporal(
         handle: *mut c_void,
         embedding: *const f32, embedding_len: usize,
@@ -129,6 +141,9 @@ extern "C" {
         out_failures_json: *mut *mut c_char,
     ) -> i32;
     fn seraph_store_seal(handle: *mut c_void, reason: *const c_char) -> *mut c_char;
+    fn seraph_store_seal_with_anchor(handle: *mut c_void, reason: *const c_char, backend: *const c_char, token: *const u8, token_len: usize) -> *mut c_char;
+    fn seraph_store_order_digest(handle: *mut c_void, through_frame_id: *const c_char) -> *mut c_char;
+    fn seraph_store_anchor_claims(handle: *mut c_void) -> *mut c_char;
     fn seraph_store_is_sealed(handle: *mut c_void) -> i32;
 
     // Supersede
@@ -183,8 +198,18 @@ extern "C" {
     fn seraph_store_set_search_entry_gap(handle: *mut c_void, gap: f32) -> i32;
     fn seraph_store_set_search_use_stream(handle: *mut c_void, on: bool, beam: usize) -> i32;
     fn seraph_store_set_search_stream_threshold(handle: *mut c_void, n: usize) -> i32;
+    fn seraph_store_set_search_rank_mode(handle: *mut c_void, mode: u8, share: f32, doors: usize, budget: usize) -> i32;
+    fn seraph_store_set_seed_term(handle: *mut c_void, beta: f32) -> i32;
+    fn seraph_store_set_commit_ceiling_margin(handle: *mut c_void, m: f32) -> i32;
+    fn seraph_store_set_sim_edge_policy(handle: *mut c_void, routing: bool, parent: bool, occlusion: f32, pool: usize) -> i32;
     fn seraph_store_set_search_max_visits(handle: *mut c_void, v: usize) -> i32;
     fn seraph_store_set_search_ceiling_margin(handle: *mut c_void, m: f32) -> i32;
+    fn seraph_store_set_search_ceiling_slack(handle: *mut c_void, slack: f32) -> i32;
+    fn seraph_store_set_door_index(handle: *mut c_void, on: bool) -> i32;
+    fn seraph_store_set_door_index_ef(handle: *mut c_void, ef: usize) -> i32;
+    fn seraph_store_vector_precision(handle: *mut c_void) -> *mut c_char;
+    fn seraph_store_resident_precision(handle: *mut c_void) -> *mut c_char;
+    fn seraph_store_set_resident_precision(handle: *mut c_void, name: *const c_char) -> i32;
     fn seraph_store_set_search_arena(handle: *mut c_void, on: bool) -> i32;
     fn seraph_store_set_search_adjacency(handle: *mut c_void, on: bool) -> i32;
     fn seraph_store_set_walk_profile(handle: *mut c_void, on: bool) -> i32;
@@ -206,6 +231,7 @@ extern "C" {
     fn seraph_store_lineage(handle: *mut c_void, frame_id: *const c_char) -> *mut c_char;
     fn seraph_store_path(handle: *mut c_void, from_id: *const c_char, to_id: *const c_char) -> *mut c_char;
     fn seraph_store_subtree(handle: *mut c_void, frame_id: *const c_char, max_depth: usize) -> *mut c_char;
+    fn seraph_store_subtrees(handle: *mut c_void, min_size: usize) -> *mut c_char;
 
     // Search variants
     fn seraph_store_search_text(
@@ -232,8 +258,21 @@ extern "C" {
     fn seraph_store_neighborhood(handle: *mut c_void, frame_id: *const c_char, tau: f32, hops: usize) -> *mut c_char;
     fn seraph_store_neighborhood_spec(handle: *mut c_void, frame_id: *const c_char, tau_mode: i32, tau_value: f32, hops: usize) -> *mut c_char;
     fn seraph_store_chain(handle: *mut c_void, from_id: *const c_char, to_id: *const c_char) -> *mut c_char;
+    fn seraph_store_chain_opts(handle: *mut c_void, from_id: *const c_char, to_id: *const c_char, include_superseded: bool) -> *mut c_char;
+    fn seraph_store_provenance(handle: *mut c_void, frame_id: *const c_char, tau: f32, include_superseded: bool) -> *mut c_char;
+    fn seraph_store_influence(handle: *mut c_void, frame_id: *const c_char, tau: f32, include_superseded: bool) -> *mut c_char;
+    fn seraph_store_provenance_with_warp_spec(handle: *mut c_void, frame_id: *const c_char, warp_spec_json: *const c_char, tau: f32, include_superseded: bool) -> *mut c_char;
+    fn seraph_store_influence_with_warp_spec(handle: *mut c_void, frame_id: *const c_char, warp_spec_json: *const c_char, tau: f32, include_superseded: bool) -> *mut c_char;
+    fn seraph_store_connections(handle: *mut c_void, from_id: *const c_char, to_id: *const c_char, max_routes: usize, forward: bool, include_superseded: bool) -> *mut c_char;
+    fn seraph_store_chain_forward(handle: *mut c_void, from_id: *const c_char, to_id: *const c_char, include_superseded: bool) -> *mut c_char;
     fn seraph_store_chain_to(handle: *mut c_void, query_embedding: *const f32, query_len: usize) -> *mut c_char;
     fn seraph_store_chain_between(handle: *mut c_void, emb_a: *const f32, len_a: usize, emb_b: *const f32, len_b: usize) -> *mut c_char;
+    fn seraph_store_chain_forward_between(handle: *mut c_void, emb_a: *const f32, len_a: usize, emb_b: *const f32, len_b: usize, top_k: usize, tau: f32, include_superseded: bool) -> *mut c_char;
+    fn seraph_store_history(handle: *mut c_void, query_embedding: *const f32, query_len: usize, top_k: usize, tau: f32, anchors: usize) -> *mut c_char;
+    fn seraph_store_history_with_warp_spec(handle: *mut c_void, query_embedding: *const f32, query_len: usize, warp_spec_json: *const c_char, top_k: usize, tau: f32, anchors: usize) -> *mut c_char;
+    fn seraph_store_chain_to_with_warp_spec(handle: *mut c_void, query_embedding: *const f32, query_len: usize, warp_spec_json: *const c_char) -> *mut c_char;
+    fn seraph_store_chain_between_with_warp_spec(handle: *mut c_void, emb_a: *const f32, len_a: usize, emb_b: *const f32, len_b: usize, warp_spec_json: *const c_char) -> *mut c_char;
+    fn seraph_store_neighborhood_with_warp_spec(handle: *mut c_void, frame_id: *const c_char, warp_spec_json: *const c_char, tau: f32, hops: usize) -> *mut c_char;
 
     // Intelligence
     fn seraph_store_density_score(handle: *mut c_void, frame_id: *const c_char) -> f32;
@@ -257,7 +296,7 @@ extern "C" {
     fn seraph_store_commit_marker(handle: *mut c_void, kind: *const c_char, metadata_json: *const c_char) -> *mut c_char;
     fn seraph_store_markers(handle: *mut c_void, kind: *const c_char) -> *mut c_char;
     fn seraph_store_resolve_tau(handle: *mut c_void) -> f32;
-    fn seraph_store_resolve_tau_spec(handle: *mut c_void, mode: i32, value: f32) -> f32;
+    fn seraph_store_resolve_tau_spec(handle: *mut c_void, tau_mode: i32, tau_value: f32) -> f32;
     fn seraph_store_drift_report(handle: *mut c_void, window: usize, threshold: f32) -> *mut c_char;
     fn seraph_store_contradictions(handle: *mut c_void, min_divergence: f32) -> *mut c_char;
     fn seraph_store_contradictions_v2(handle: *mut c_void, tau_mode: i32, tau_value: f32) -> *mut c_char;
@@ -765,6 +804,27 @@ impl StoreConfig {
         self
     }
 
+    /// Store format version (default 5, precision-tagged vectors).
+    pub fn format_version(mut self, v: u32) -> Self {
+        self.json_overrides.insert("format_version".into(), v.into());
+        self
+    }
+
+    /// What each frame persists of its vector: `"codes4"` (default), `"fp32"`,
+    /// `"fp16"`, `"bf16"` or `"fp64"`. Fixed at create for the store's life.
+    pub fn vector_precision(mut self, name: &str) -> Self {
+        self.json_overrides.insert("vector_precision".into(), name.into());
+        self
+    }
+
+    /// What the walk scores from by default: `"fp32"`, `"fp16"`, `"bf16"` or
+    /// `"frame"`. Unset picks the form that scores `vector_precision` exactly at
+    /// the least memory.
+    pub fn resident_precision(mut self, name: &str) -> Self {
+        self.json_overrides.insert("resident_precision".into(), name.into());
+        self
+    }
+
     fn to_json_cstring(&self) -> Option<CString> {
         if self.json_overrides.is_empty() {
             None
@@ -1003,9 +1063,9 @@ impl Store {
     /// [`search_opts`](Self::search_opts), plus:
     /// - `after_us` / `before_us`: inclusive visibility window on the frame
     ///   timestamp (microseconds since epoch), `None` = unbounded.
-    ///   Out-of-window frames are still traversed as routing nodes; they are
-    ///   only ineligible for result slots, so `top_k` fills with in-window
-    ///   frames.
+    ///   Frames before `after_us` are still traversed as routing nodes, only
+    ///   ineligible for result slots, so `top_k` fills with in-window frames;
+    ///   frames after `before_us` are not walked (the store as it stood).
     /// - `order`: presentation order for the selected top_k set — a pure
     ///   post-selection reorder; scores and confidences are untouched.
     ///   [`TemporalOrder::Relevance`] with no window matches
@@ -1075,6 +1135,28 @@ impl Store {
         } else {
             Some(unsafe { take_cstring(p) })
         }
+    }
+
+    /// What each frame of this store persists of its vector: `"codes4"`,
+    /// `"fp32"`, `"fp16"`, `"bf16"` or `"fp64"` (formats below 5 are `"codes4"`).
+    pub fn vector_precision(&self) -> String {
+        let p = unsafe { seraph_store_vector_precision(self.handle) };
+        if p.is_null() { String::new() } else { unsafe { take_cstring(p) } }
+    }
+
+    /// What the walk currently scores from: `"fp32"`, `"fp16"`, `"bf16"` or `"frame"`.
+    pub fn resident_precision(&self) -> String {
+        let p = unsafe { seraph_store_resident_precision(self.handle) };
+        if p.is_null() { String::new() } else { unsafe { take_cstring(p) } }
+    }
+
+    /// Change what the walk scores from and rebuild the resident copy at once:
+    /// `"fp32"`, `"fp16"`, `"bf16"` (a contiguous arena at that width) or
+    /// `"frame"` (none; 20-40% more per walk). Runtime only.
+    pub fn set_resident_precision(&mut self, name: &str) -> Result<(), Error> {
+        let c = CString::new(name).map_err(|_| Error { message: "resident_precision contains a NUL".into() })?;
+        let rc = unsafe { seraph_store_set_resident_precision(self.handle, c.as_ptr()) };
+        if rc == 0 { Ok(()) } else { Err(last_error()) }
     }
 
     /// Get the embedding model ID.
@@ -1153,6 +1235,40 @@ impl Store {
             )
         };
         if id.is_null() { Err(last_error()) } else { Ok(unsafe { take_cstring(id) }) }
+    }
+
+    /// Seal with an external time anchor over the order digest of every frame
+    /// before the seal (take it with `order_digest_json(None)` after the last write).
+    pub fn seal_with_anchor(&mut self, reason: Option<&str>, backend: &str, token: &[u8]) -> Result<String, Error> {
+        let reason_c = reason.map(to_cstring);
+        let backend_c = to_cstring(backend);
+        let id = unsafe {
+            seraph_store_seal_with_anchor(
+                self.handle,
+                reason_c.as_ref().map_or(ptr::null(), |c| c.as_ptr()),
+                backend_c.as_ptr(),
+                token.as_ptr(), token.len(),
+            )
+        };
+        if id.is_null() { Err(last_error()) } else { Ok(unsafe { take_cstring(id) }) }
+    }
+
+    /// The order digest to anchor, as JSON `{"frame_count", "digest_hex"}`, over
+    /// every frame through `through_frame_id` or the whole log.
+    pub fn order_digest_json(&self, through_frame_id: Option<&str>) -> Result<String, Error> {
+        let through_c = through_frame_id.map(to_cstring);
+        let p = unsafe {
+            seraph_store_order_digest(self.handle, through_c.as_ref().map_or(ptr::null(), |c| c.as_ptr()))
+        };
+        if p.is_null() { return Err(last_error()); }
+        Ok(unsafe { take_cstring(p) })
+    }
+
+    /// Every seal and tip anchor that commits to an order digest, as JSON.
+    pub fn anchor_claims_json(&self) -> Result<String, Error> {
+        let p = unsafe { seraph_store_anchor_claims(self.handle) };
+        if p.is_null() { return Err(last_error()); }
+        Ok(unsafe { take_cstring(p) })
     }
 
     /// Check if the store is sealed.
@@ -1471,6 +1587,41 @@ impl Store {
         if rc == 0 { Ok(()) } else { Err(last_error()) }
     }
 
+    /// Weight of the commit-time seed term (default 0.6; `0.0` disables it).
+    /// Runtime only: parents are stored on frames, so no migration is involved.
+    pub fn set_seed_term(&mut self, beta: f32) -> Result<(), Error> {
+        let rc = unsafe { seraph_store_set_seed_term(self.handle, beta) };
+        if rc == 0 { Ok(()) } else { Err(last_error()) }
+    }
+
+    /// Ceiling slack of the commit-time walk that picks each new frame's parent
+    /// and similarity edges. Runtime only: frames store both.
+    pub fn set_commit_ceiling_margin(&mut self, m: f32) -> Result<(), Error> {
+        let rc = unsafe { seraph_store_set_commit_ceiling_margin(self.handle, m) };
+        if rc == 0 { Ok(()) } else { Err(last_error()) }
+    }
+
+    /// How each committing frame chooses its similarity edges: `routing` allows
+    /// edges to Genesis/Seed frames (default false), `parent` the edge to its own
+    /// parent (default true), `occlusion > 0` prunes redundant candidates (`0` =
+    /// top-k), `pool` widens the candidate list (`0` = `edge_budget + 1`).
+    pub fn set_sim_edge_policy(&mut self, routing: bool, parent: bool, occlusion: f32, pool: usize) -> Result<(), Error> {
+        let rc = unsafe { seraph_store_set_sim_edge_policy(self.handle, routing, parent, occlusion, pool) };
+        if rc == 0 { Ok(()) } else { Err(last_error()) }
+    }
+
+    /// Result-slot policy for `search`: `None` = cosine (default);
+    /// `Some((share, doors, budget))` = two-channel, the last `round(share * top_k)`
+    /// slots filled by a confined descent's best hits the cosine list lacks.
+    pub fn set_search_rank_mode(&mut self, two_channel: Option<(f32, usize, usize)>) -> Result<(), Error> {
+        let (mode, (share, doors, budget)) = match two_channel {
+            None => (0u8, (0.0, 0, 0)),
+            Some(p) => (1u8, p),
+        };
+        let rc = unsafe { seraph_store_set_search_rank_mode(self.handle, mode, share, doors, budget) };
+        if rc == 0 { Ok(()) } else { Err(last_error()) }
+    }
+
     /// Threshold-gate: `search` auto-streams at/above `n` frames (`0` disables).
     pub fn set_search_stream_threshold(&mut self, n: usize) -> Result<(), Error> {
         let rc = unsafe { seraph_store_set_search_stream_threshold(self.handle, n) };
@@ -1491,8 +1642,33 @@ impl Store {
         if rc == 0 { Ok(()) } else { Err(last_error()) }
     }
 
-    /// Toggle the Phase-2 contiguous pre-normalized embedding arena. Results
-    /// are unchanged either way.
+    /// Search stop-line slack: search stops once the best frontier score is no
+    /// more than the k-th best minus `slack` (default 0.05; 0.10 is the
+    /// completeness setting); 0 falls back to the multiplicative margin.
+    pub fn set_search_ceiling_slack(&mut self, slack: f32) -> Result<(), Error> {
+        let rc = unsafe { seraph_store_set_search_ceiling_slack(self.handle, slack) };
+        if rc == 0 { Ok(()) } else { Err(last_error()) }
+    }
+
+    /// Phase 1 through the door index, a navigable small-world graph over the
+    /// eigenframes (default on). On builds the index at once when the store has
+    /// enough eigenframes; off drops it and Phase 1 scans.
+    pub fn set_door_index(&mut self, on: bool) -> Result<(), Error> {
+        let rc = unsafe { seraph_store_set_door_index(self.handle, on) };
+        if rc == 0 { Ok(()) } else { Err(last_error()) }
+    }
+
+    /// Candidates the door index examines per query (default 128): higher is
+    /// closer to the exact scan, at more distance evaluations.
+    pub fn set_door_index_ef(&mut self, ef: usize) -> Result<(), Error> {
+        let rc = unsafe { seraph_store_set_door_index_ef(self.handle, ef) };
+        if rc == 0 { Ok(()) } else { Err(last_error()) }
+    }
+
+    /// Toggle the Phase-2 contiguous pre-normalized embedding arena. Default on.
+    /// Off, the walk takes the same exact dot from each frame's embedding and a
+    /// stored inverse norm, N*D f32 less resident, at 20-40% more per search.
+    /// Results are unchanged either way.
     pub fn set_search_arena(&mut self, on: bool) -> Result<(), Error> {
         let rc = unsafe { seraph_store_set_search_arena(self.handle, on) };
         if rc == 0 { Ok(()) } else { Err(last_error()) }
@@ -1741,6 +1917,69 @@ impl Store {
         Ok(unsafe { take_cstring(p) })
     }
 
+    /// `chain_json` with `include_superseded`: superseded frames may be steps.
+    pub fn chain_opts_json(&self, from_id: &str, to_id: &str, include_superseded: bool) -> Result<String, Error> {
+        let from_c = to_cstring(from_id);
+        let to_c = to_cstring(to_id);
+        let p = unsafe { seraph_store_chain_opts(self.handle, from_c.as_ptr(), to_c.as_ptr(), include_superseded) };
+        if p.is_null() { return Err(last_error()); }
+        Ok(unsafe { take_cstring(p) })
+    }
+
+    /// Provenance walk from `frame_id` as chain JSON (`tau: None` = the store's background).
+    pub fn provenance_json(&self, frame_id: &str, tau: Option<f32>, include_superseded: bool) -> Result<String, Error> {
+        let fid = to_cstring(frame_id);
+        let p = unsafe { seraph_store_provenance(self.handle, fid.as_ptr(), tau.unwrap_or(f32::NAN), include_superseded) };
+        if p.is_null() { return Err(last_error()); }
+        Ok(unsafe { take_cstring(p) })
+    }
+
+    /// Influence walk from `frame_id` as chain JSON (`tau: None` = the store's background).
+    pub fn influence_json(&self, frame_id: &str, tau: Option<f32>, include_superseded: bool) -> Result<String, Error> {
+        let fid = to_cstring(frame_id);
+        let p = unsafe { seraph_store_influence(self.handle, fid.as_ptr(), tau.unwrap_or(f32::NAN), include_superseded) };
+        if p.is_null() { return Err(last_error()); }
+        Ok(unsafe { take_cstring(p) })
+    }
+
+    /// Provenance walk steered by a warp spec (JSON), as chain JSON.
+    pub fn provenance_with_warp_spec_json(&self, frame_id: &str, warp_spec_json: &str, tau: Option<f32>, include_superseded: bool) -> Result<String, Error> {
+        let fid = to_cstring(frame_id);
+        let spec = to_cstring(warp_spec_json);
+        let p = unsafe { seraph_store_provenance_with_warp_spec(self.handle, fid.as_ptr(), spec.as_ptr(), tau.unwrap_or(f32::NAN), include_superseded) };
+        if p.is_null() { return Err(last_error()); }
+        Ok(unsafe { take_cstring(p) })
+    }
+
+    /// Influence walk steered by a warp spec (JSON), as chain JSON.
+    pub fn influence_with_warp_spec_json(&self, frame_id: &str, warp_spec_json: &str, tau: Option<f32>, include_superseded: bool) -> Result<String, Error> {
+        let fid = to_cstring(frame_id);
+        let spec = to_cstring(warp_spec_json);
+        let p = unsafe { seraph_store_influence_with_warp_spec(self.handle, fid.as_ptr(), spec.as_ptr(), tau.unwrap_or(f32::NAN), include_superseded) };
+        if p.is_null() { return Err(last_error()); }
+        Ok(unsafe { take_cstring(p) })
+    }
+
+    /// The distinct ways two frames connect, as JSON `[{"chain", "bridge"}]`.
+    pub fn connections_json(&self, from_id: &str, to_id: &str, max_routes: usize, forward: bool, include_superseded: bool) -> Result<String, Error> {
+        let from_c = to_cstring(from_id);
+        let to_c = to_cstring(to_id);
+        let p = unsafe { seraph_store_connections(self.handle, from_c.as_ptr(), to_c.as_ptr(), max_routes, forward, include_superseded) };
+        if p.is_null() { return Err(last_error()); }
+        Ok(unsafe { take_cstring(p) })
+    }
+
+    /// How `from_id` led to `to_id`, as JSON: the geodesic over committed edges
+    /// restricted to steps forward in commit order (`from_id` must precede `to_id`).
+    /// `include_superseded` admits superseded frames as steps.
+    pub fn chain_forward_json(&self, from_id: &str, to_id: &str, include_superseded: bool) -> Result<String, Error> {
+        let from_c = to_cstring(from_id);
+        let to_c = to_cstring(to_id);
+        let p = unsafe { seraph_store_chain_forward(self.handle, from_c.as_ptr(), to_c.as_ptr(), include_superseded) };
+        if p.is_null() { return Err(last_error()); }
+        Ok(unsafe { take_cstring(p) })
+    }
+
     /// Chain to nearest frame from a query embedding. Returns JSON.
     pub fn chain_to_json(&self, query_embedding: &[f32]) -> Result<String, Error> {
         let p = unsafe {
@@ -1759,6 +1998,112 @@ impl Store {
                 emb_b.as_ptr(), emb_b.len(),
             )
         };
+        if p.is_null() { return Err(last_error()); }
+        Ok(unsafe { take_cstring(p) })
+    }
+
+    /// How the idea at `emb_a` led to the idea at `emb_b`, as JSON: the forward
+    /// geodesic between the best-fitting pair of the two queries' search results
+    /// that a forward route joins. `include_superseded` admits superseded frames
+    /// as endpoints and steps.
+    pub fn chain_forward_between_json(&self, emb_a: &[f32], emb_b: &[f32], top_k: usize, tau: f32, include_superseded: bool) -> Result<String, Error> {
+        let p = unsafe {
+            seraph_store_chain_forward_between(
+                self.handle,
+                emb_a.as_ptr(), emb_a.len(),
+                emb_b.as_ptr(), emb_b.len(),
+                top_k, tau, include_superseded,
+            )
+        };
+        if p.is_null() { return Err(last_error()); }
+        Ok(unsafe { take_cstring(p) })
+    }
+
+    /// History read: search locates the answer, its top `anchors` hits choose the
+    /// trees, a parent-tree walk returns the best `top_k` frames oldest first with
+    /// their routes. Returns JSON (`hits`, `anchors`, `doors`, `visits`).
+    pub fn history_json(&self, query_embedding: &[f32], top_k: usize, tau: f32, anchors: usize) -> Result<String, Error> {
+        let p = unsafe {
+            seraph_store_history(self.handle, query_embedding.as_ptr(), query_embedding.len(), top_k, tau, anchors)
+        };
+        if p.is_null() { return Err(last_error()); }
+        Ok(unsafe { take_cstring(p) })
+    }
+
+    /// History read from a warped query (`warp_spec_json` as for the warp-spec search). Returns JSON.
+    pub fn history_with_warp_spec_json(&self, query_embedding: &[f32], warp_spec_json: &str, top_k: usize, tau: f32,
+                                       anchors: usize) -> Result<String, Error> {
+        let spec_c = to_cstring(warp_spec_json);
+        let p = unsafe {
+            seraph_store_history_with_warp_spec(self.handle, query_embedding.as_ptr(), query_embedding.len(),
+                                                spec_c.as_ptr(), top_k, tau, anchors)
+        };
+        if p.is_null() { return Err(last_error()); }
+        Ok(unsafe { take_cstring(p) })
+    }
+
+    /// `chain_to_json` from a warped query (`warp_spec_json` as for the warp-spec search). Returns JSON.
+    pub fn chain_to_with_warp_spec_json(&self, query_embedding: &[f32], warp_spec_json: &str) -> Result<String, Error> {
+        let spec_c = to_cstring(warp_spec_json);
+        let p = unsafe {
+            seraph_store_chain_to_with_warp_spec(self.handle, query_embedding.as_ptr(), query_embedding.len(), spec_c.as_ptr())
+        };
+        if p.is_null() { return Err(last_error()); }
+        Ok(unsafe { take_cstring(p) })
+    }
+
+    /// `chain_between_json` with both endpoints warped (`warp_spec_json` as for the warp-spec search). Returns JSON.
+    pub fn chain_between_with_warp_spec_json(&self, emb_a: &[f32], emb_b: &[f32], warp_spec_json: &str) -> Result<String, Error> {
+        let spec_c = to_cstring(warp_spec_json);
+        let p = unsafe {
+            seraph_store_chain_between_with_warp_spec(self.handle, emb_a.as_ptr(), emb_a.len(), emb_b.as_ptr(), emb_b.len(),
+                                                      spec_c.as_ptr())
+        };
+        if p.is_null() { return Err(last_error()); }
+        Ok(unsafe { take_cstring(p) })
+    }
+
+    /// `neighborhood_json` under a warp (`warp_spec_json` as for the warp-spec search). Returns JSON.
+    pub fn neighborhood_with_warp_spec_json(&self, frame_id: &str, warp_spec_json: &str, tau: f32, hops: usize) -> Result<String, Error> {
+        let fid_c = to_cstring(frame_id);
+        let spec_c = to_cstring(warp_spec_json);
+        let p = unsafe {
+            seraph_store_neighborhood_with_warp_spec(self.handle, fid_c.as_ptr(), spec_c.as_ptr(), tau, hops)
+        };
+        if p.is_null() { return Err(last_error()); }
+        Ok(unsafe { take_cstring(p) })
+    }
+
+    /// Search through the bounded walk with an explicit beam width and visit budget
+    /// (`None` = the store's `search_max_visits`); records the visit count for
+    /// [`last_search_visits`](Self::last_search_visits). With the store's own beam and
+    /// budget it returns the same hits as [`search`](Self::search).
+    pub fn search_stream(&self, query_embedding: &[f32], top_k: usize, tau: f32, beam_width: usize,
+                         max_visits: Option<usize>) -> Result<Vec<Hit>, Error> {
+        let mut hits_ptr: *mut FfiHit = ptr::null_mut();
+        let mut count: usize = 0;
+        let rc = unsafe {
+            seraph_store_search_stream(self.handle, query_embedding.as_ptr(), query_embedding.len(), top_k, tau,
+                                       beam_width, max_visits.unwrap_or(0), &mut hits_ptr, &mut count)
+        };
+        if rc != 0 { return Err(last_error()); }
+        Ok(take_hits(hits_ptr, count))
+    }
+
+    /// Search returning the hits and the frames visited, in visit order, as JSON
+    /// (`hits`, `trace`).
+    pub fn search_with_trace_json(&self, query_embedding: &[f32], top_k: usize, tau: f32) -> Result<String, Error> {
+        let p = unsafe {
+            seraph_store_search_with_trace(self.handle, query_embedding.as_ptr(), query_embedding.len(), top_k, tau)
+        };
+        if p.is_null() { return Err(last_error()); }
+        Ok(unsafe { take_cstring(p) })
+    }
+
+    /// Seed-rooted subtrees with at least `min_size` descendants, as a JSON array of
+    /// `{"root", "root_status", "descendant_count", "eigenframe_count", "max_depth"}`.
+    pub fn subtrees_json(&self, min_size: usize) -> Result<String, Error> {
+        let p = unsafe { seraph_store_subtrees(self.handle, min_size) };
         if p.is_null() { return Err(last_error()); }
         Ok(unsafe { take_cstring(p) })
     }

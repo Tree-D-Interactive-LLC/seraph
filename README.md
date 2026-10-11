@@ -4,35 +4,32 @@
 
 SERAPH is a storage and retrieval engine that organizes content through emergent geometric structure rather than explicit schemas. It provides cryptographic provenance, semantic search, and chain-of-custody guarantees from genesis to tip.
 
-**New in 0.2.6**
+**New in 0.3.0**
 
-- **Temporal views** — order results by recency or scope them to a time window, without changing what the geometry retrieves. The window gates result eligibility during traversal, so `top_k` fills with in-window frames rather than being starved by a post-filter.
-- **Hardened write and recovery paths** — the frame log repairs a torn tail on open (a crash mid-append could previously strand frames written afterwards), seal and embedding-dimension enforcement moved to the single commit choke point, and invalid writes now fail loudly instead of being silently accepted.
-- **Real time-anchor verification** — OpenTimestamps proofs are checked against the Bitcoin merkle root, and RFC 3161 tokens have their CMS signature verified. Both previously reported `confirmed` on structural validity alone. Chain-of-trust policy stays with the calling application, which receives the signer certificate.
-- **Safer C ABI** — every export runs behind a panic barrier and null-guards its raw slice parameters; the Python bindings release the GIL around ingest, search, and encode.
+- **Vector precision is yours.** Choose at `create` what each frame persists — the calibration-free 4-bit codes (the default), or `fp32`, `fp16`, `bf16`, `fp64` — and separately what search scores from (`resident_precision`: `fp32`, `fp16`, `bf16`, or none), switchable at runtime. A half-precision resident halves search memory at the same quality. Stores from every earlier release open unchanged.
+- **Reads that explain the record.** `history` answers how the store came to hold what a query finds; `provenance` and `influence` follow what a frame drew on and what later drew on it; `connections` lists the distinct ways two frames connect; `chain_forward` shows how A led to B. Each has a warp-steered variant, and `chain` now returns the shortest route over committed edges (a frame's own ancestry is `lineage`).
+- **Evidence.** The frame id, commit time and committed neighbours are bound into every watermark, and seals and anchors record a digest over commit order that `verify` checks — reordering, removing or inserting frames under a seal or anchor is caught. New: `seal_with_anchor`, `append_tip_anchor`, `anchor_claims`, `order_digest`.
+- **As-of reads.** A time window's `before` end reads the store as it stood, so a historical query is as fast and as complete as a current one.
+- **Faster at scale.** Search on large stores returns in a fraction of the time, ingest does less work per frame, and opening a store no longer grows its `.gidx` sidecar.
+- **Windows GPU builds run on any NVIDIA GPU from Turing up** (RTX 20-series, T4 and newer). Earlier Windows releases loaded their GPU kernels only on compute 8.9 parts (RTX 40-series); the build now pins and verifies the target on every release.
+- **Full C and Rust parity.** The C ABI (175 functions) and the Rust crate reach every engine operation, including streamed and traced search, subtrees, and warp-steered chain and neighborhood reads. All three API references are generated from a single declaration of each operation, so the surfaces cannot drift.
 
-> **Upgrading from 0.2.5?** Auto-resolved `tau` (`None`, `"loose"`, `"strict"`)
-> now calibrates against the background similarity distribution and resolves
-> lower than before; `neighborhood`'s `hops` default drops from 2 to 1. See
-> the 0.2.6 release notes for the full list of behaviour changes.
+> **Upgrading from 0.2.x?** Stores created by 0.3.0 use frame format 5 and need
+> 0.3.0 or later to open; stores from earlier releases open unchanged. The default
+> search stop is tighter (`search_ceiling_slack` 0.05, was 0.10) — call
+> `set_search_ceiling_slack(0.10)` for the previous completeness setting. Seeds take
+> no similarity edges in new stores, and `put` accepts `seed_term`.
 
-**Since 0.2.5**
-
-- **Federation** — a read-side coordinator routes a query across many independent single-file stores and merges the results, so a knowledge base can be partitioned by domain without a central index. Opt-in and first-class.
-- **Batched bulk ingest** — the snapshot-based `put_batch` path selects parents and similarity neighbors with a single GPU matmul per batch, making large builds and re-ingests roughly an order of magnitude faster than the per-frame path.
-- **Full C FFI parity** — the C ABI exposes the complete engine surface (129 functions), so C/C++/Rust callers reach everything the Python bindings do. See [FFI_API.md](FFI_API.md).
-
-**Foundational (since 0.2.0)**
+**Foundations**
 
 - **TurboQuant storage** — 4-bit codes are the canonical embedding, so stores are **~4× smaller** (up to ~8× on short content) with **sub-millisecond search** at scale (with the SIMD embedding arena enabled — see note below).
 - **Bring-your-own encoder, zero setup** — any embedding model works out of the box with **no calibration** and nothing per-encoder to configure or persist. The quantizer is universal, so stores are self-describing and portable across machines.
 
-> **On the sub-millisecond figure.** Search enables a contiguous, pre-normalized
-> **SIMD embedding arena** (runtime-dispatched AVX2/FMA per-visit scoring) via the
-> `search_arena_on` option. With it on, a 900k-frame store answers text queries in
-> **~0.7–0.9 ms** at the operating threshold; the default (arena off) path is a few
-> milliseconds. Top-k results are identical either way — the arena only changes how
-> the per-visit score is computed, not what is retrieved.
+> **On the sub-millisecond figure.** Search scores from a contiguous, pre-normalized
+> **SIMD embedding arena**, on by default. A 900k-frame store answers text queries in
+> **~0.7–0.9 ms** at the operating threshold. `set_search_arena(False)` gives the
+> arena's memory back (N × D floats) for 20–40% more per query with identical
+> results; `set_resident_precision("fp16")` keeps the speed at half the memory.
 
 ---
 
@@ -40,7 +37,7 @@ SERAPH is a storage and retrieval engine that organizes content through emergent
 
 ### 1. Download
 
-Download the latest release for your platform from [Releases](https://github.com/Tree-D-Interactive/seraph-releases/releases).
+Download the latest release for your platform from [Releases](https://github.com/Tree-D-Interactive-LLC/seraph/releases).
 
 Each release includes GPU and ONNX library builds and the CLI, organized by platform:
 
@@ -80,13 +77,15 @@ Prebuilt binaries and wheels in this release cover **Windows** and **Linux x86_6
 
 | Platform | GPU (candle) | ONNX | Notes |
 |----------|:---:|:----:|-------|
-| Windows x86_64 | ✓ | ✓ | GPU requires NVIDIA driver ≥ 520 |
-| Linux x86_64 | ✓ | ✓ | GPU requires NVIDIA driver ≥ 520 |
+| Windows x86_64 | ✓ | ✓ | GPU requires NVIDIA driver ≥ 580 and compute capability ≥ 7.5 (Turing) |
+| Linux x86_64 | ✓ | ✓ | GPU requires NVIDIA driver ≥ 560 and compute capability ≥ 7.0 (Volta) |
 
 > macOS is not shipped as a prebuilt binary or wheel in this release — build from source (candle, CPU only).
 
 **GPU requirements (candle and ONNX):**
-- NVIDIA GPU with compute capability ≥ 7.0 (Volta or newer)
+- NVIDIA GPU with compute capability ≥ 7.0 (Volta or newer) for Linux builds, and
+  ≥ 7.5 (Turing — RTX 20-series, T4 — or newer) for Windows builds, whose CUDA 13
+  toolkit no longer targets Volta
 - NVIDIA driver ≥ 580 for Windows builds, ≥ 560 for Linux builds. The two are
   compiled with different CUDA toolkits (13.1 and 12.6), and the PTX ISA version
   that produces sets the driver floor

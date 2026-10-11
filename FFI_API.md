@@ -86,8 +86,9 @@ if (!store) {
 17. [Events & Subscriptions](#events--subscriptions)
 18. [Encoder](#encoder)
 19. [Batch Operations](#batch-operations)
-20. [Memory Management](#memory-management)
-21. [Structs Reference](#structs-reference)
+20. [Federation](#federation)
+21. [Memory Management](#memory-management)
+22. [Structs Reference](#structs-reference)
 
 ---
 
@@ -95,7 +96,7 @@ if (!store) {
 
 ### `seraph_store_create`
 
-Create a new store file with a fixed embedding model declared at genesis.
+Create a new store on disk.
 
 ```c
 void* seraph_store_create(const char* path, const char* model_id, const char* config_json);
@@ -105,23 +106,9 @@ void* seraph_store_create(const char* path, const char* model_id, const char* co
 
 | Name | Type | Required | Description |
 |---|---|---|---|
-| `path` | `const char*` | yes | Filesystem path (UTF-8) for the new `.sfg` file. |
-| `model_id` | `const char*` | no | Embedding model ID. `NULL` → default model. Permanent for the store's lifetime. |
-| `config_json` | `const char*` | no | JSON config overrides. `NULL` → defaults. Fields below. |
-
-**Config JSON fields** (all optional)
-
-| Field | Type | Default | Description |
-|---|---|---|---|
-| `eigen_threshold` | int | 5 | In-degree at which a frame is promoted to eigenframe. |
-| `eigen_min_age_s` | float | 0.0 | Minimum age (seconds) before a frame is promotion-eligible. Persisted in the header, so an existing store keeps the value it was created with. |
-| `tau_similarity` | float | 0.5 | Default similarity-edge threshold. |
-| `tau_merge` | float | 0.92 | Consolidation merge threshold. |
-| `max_index_elements` | int | 100000 | Index capacity hint. |
-| `search_max_depth` | int | 50 | Max BFS traversal depth during search. |
-| `search_visit_cap_multiplier` | int | 5 | BFS frontier cap = `top_k ×` this value. |
-| `redirect_per_frame` | bool | true | Emit one redirect frame per superseded source on consolidation. |
-| `eigen_matmul_min` | int | 256 | Eigenframe count at which scan switches to batched matmul. |
+| `path` | `const char*` | yes | Filesystem path for the `.sfg` file. |
+| `model_id` | `const char*` | yes | Embedding model ID; `NULL` for the default model. |
+| `config_json` | `const char*` | yes | JSON config overrides; `NULL` for the defaults. |
 
 **Returns:** Opaque store handle (`void*`). `NULL` on error.
 
@@ -136,19 +123,14 @@ if (!store) { fprintf(stderr, "create failed: %s\n", seraph_last_error()); retur
 
 ### `seraph_store_create_with_writer`
 
-Create a store with an **app-supplied writer identity**. The caller holds a
-32-byte Ed25519 private seed; SERAPH signs every frame with it and records the
-derived public key in the store's genesis attestation, so the chain is
-verifiable later without the key. The seed never leaves the caller — SERAPH
-neither persists nor transmits it. Pass `NULL` to create without a writer
-identity (the store is non-secure).
+Create a store that signs every frame with an app-supplied writer identity and records the derived public key in the genesis attestation, so the chain verifies later without the key. The seed never leaves the caller.
 
 ```c
 void* seraph_store_create_with_writer(
     const char* path,
-    const char* model_id,       // or NULL for default
-    const char* config_json,    // or NULL for defaults
-    const uint8_t* writer_seed  // 32-byte Ed25519 seed, or NULL
+    const char* model_id,
+    const char* config_json,
+    const uint8_t* writer_seed
 );
 ```
 
@@ -156,10 +138,10 @@ void* seraph_store_create_with_writer(
 
 | Name | Type | Required | Description |
 |---|---|---|---|
-| `path` | `const char*` | yes | Filesystem path (UTF-8) for the new `.sfg` file. |
-| `model_id` | `const char*` | no | Embedding model ID. `NULL` → default model. |
-| `config_json` | `const char*` | no | JSON config overrides (see `seraph_store_create`). `NULL` → defaults. |
-| `writer_seed` | `const uint8_t*` | no | Pointer to a 32-byte Ed25519 private seed held by the caller, or `NULL`. When supplied, the store is secure and every frame is signed by this key. |
+| `path` | `const char*` | yes | Filesystem path for the .sfg file. |
+| `model_id` | `const char*` | yes | Embedding model ID; `NULL` for the default model. |
+| `config_json` | `const char*` | yes | JSON config overrides; `NULL` for the defaults. |
+| `writer_seed` | `const uint8_t*` | yes | 32-byte Ed25519 private seed held by the caller; NULL on C creates without a writer identity. |
 
 **Returns:** Opaque store handle, or `NULL` on error.
 
@@ -200,22 +182,18 @@ if (!store) { /* handle error */ }
 
 ### `seraph_store_open_with_writer`
 
-Open an existing store with an app-supplied writer identity for signing frames
-appended during this session. Reading and verification need no writer key.
+Open an existing store with an app-supplied writer identity, so frames appended in this session are signed with it. Reading and verification need no key, and the seed is never persisted or transmitted.
 
 ```c
-void* seraph_store_open_with_writer(
-    const char* path,
-    const uint8_t* writer_seed  // 32-byte Ed25519 seed, or NULL
-);
+void* seraph_store_open_with_writer(const char* path, const uint8_t* writer_seed);
 ```
 
 **Parameters**
 
 | Name | Type | Required | Description |
 |---|---|---|---|
-| `path` | `const char*` | yes | Path to an existing `.sfg` file. |
-| `writer_seed` | `const uint8_t*` | no | 32-byte Ed25519 private seed for signing appended frames, or `NULL` to open without a writer identity (read/verify only; secure appends require a writer). |
+| `path` | `const char*` | yes | Path to the .sfg file. |
+| `writer_seed` | `const uint8_t*` | yes | 32-byte Ed25519 private seed held by the caller. |
 
 **Returns:** Store handle, or `NULL` on error.
 
@@ -231,7 +209,7 @@ if (!store) { /* handle error */ }
 
 ### `seraph_store_close`
 
-Close the store and free all resources. The handle is invalid after this call.
+Close the store and flush all pending writes. The store object raises on any subsequent operation.
 
 ```c
 void seraph_store_close(void* handle);
@@ -241,7 +219,7 @@ void seraph_store_close(void* handle);
 
 | Name | Type | Required | Description |
 |---|---|---|---|
-| `handle` | `void*` | yes | Store handle to close. |
+| `handle` | `void*` | yes | Store handle. |
 
 **Returns:** Nothing.
 
@@ -255,7 +233,7 @@ seraph_store_close(store);
 
 ### `seraph_store_sync`
 
-Flush pending writes to disk.
+Flush pending writes to disk without closing (`flush` on the Python surface).
 
 ```c
 int seraph_store_sync(void* handle);
@@ -279,9 +257,7 @@ if (seraph_store_sync(store) != 0) { fprintf(stderr, "%s\n", seraph_last_error()
 
 ### `seraph_store_set_search_visit_cap_multiplier`
 
-Set the BFS visit-cap multiplier at runtime. Higher values widen the search
-frontier at minimal latency cost (the Phase-1 eigenframe scan dominates search
-time). Default comes from `search_visit_cap_multiplier` in the config JSON (5).
+Legacy visit budget for a search as a multiple of `top_k`, used only when the absolute budget (`set_search_max_visits`) is `0`. Default `20`. Runtime only.
 
 ```c
 int seraph_store_set_search_visit_cap_multiplier(void* handle, uint32_t multiplier);
@@ -292,7 +268,7 @@ int seraph_store_set_search_visit_cap_multiplier(void* handle, uint32_t multipli
 | Name | Type | Required | Description |
 |---|---|---|---|
 | `handle` | `void*` | yes | Store handle. |
-| `multiplier` | `uint32_t` | yes | New frontier multiplier. Frontier cap = `top_k × multiplier`. |
+| `multiplier` | `uint32_t` | yes | Multiple of `top_k` for the legacy visit budget. |
 
 **Returns:** `0` on success, `-1` on error.
 
@@ -301,157 +277,446 @@ int seraph_store_set_search_visit_cap_multiplier(void* handle, uint32_t multipli
 **Example**
 
 ```c
-seraph_store_set_search_visit_cap_multiplier(store, 10);  // wider frontier
+seraph_store_set_search_visit_cap_multiplier(store, 10);  // wider legacy budget
 ```
 
 ### `seraph_store_set_search_entry_k`
 
-Fix the Phase-1 entry rank floor. `0` restores the default. Runtime knob.
+Entry-point floor: at least this many eigenframes become entry points for a search. `0` restores the default of `2`. Runtime only.
 
 ```c
 int seraph_store_set_search_entry_k(void* handle, size_t k);
 ```
 
-**Parameters:** `handle` (`void*`, yes), `k` (`size_t`, yes — entry rank floor; `0` = default).
+**Parameters**
+
+| Name | Type | Required | Description |
+|---|---|---|---|
+| `handle` | `void*` | yes | Store handle. |
+| `k` | `size_t` | yes | Entry rank floor; `0` = default. |
+
 **Returns:** `0` on success, `-1` on error.
+
+**Errors:** `-1` if the handle is `NULL`.
 
 ### `seraph_store_set_search_entry_gap`
 
-Relative-gap Phase-1 entry breadth: every eigenframe within `gap` of the top
-centered score enters Phase-2. `0` falls back to the entry_k floor alone.
+Entry-point breadth: every eigenframe within `gap` of the best entry score becomes an entry point, in addition to the floor. `0` uses the floor alone. Default `0.05`. Runtime only.
 
 ```c
 int seraph_store_set_search_entry_gap(void* handle, float gap);
 ```
 
-**Parameters:** `handle` (`void*`, yes), `gap` (`float`, yes — relative score gap; `0` disables).
+**Parameters**
+
+| Name | Type | Required | Description |
+|---|---|---|---|
+| `handle` | `void*` | yes | Store handle. |
+| `gap` | `float` | yes | Score gap below the best entry; `0` disables. |
+
 **Returns:** `0` on success, `-1` on error.
+
+**Errors:** `-1` if the handle is `NULL`.
 
 ### `seraph_store_set_search_use_stream`
 
-EXPERIMENTAL: route the trace-free read path (`search` / warped search) through
-the gradient-beam stream instead of the BFS flood.
+Use the bounded search walk regardless of store size (it is used automatically from `search_stream_threshold` frames). Runtime only.
 
 ```c
 int seraph_store_set_search_use_stream(void* handle, bool on, size_t beam);
 ```
 
-**Parameters:** `handle` (`void*`, yes), `on` (`bool`, yes), `beam` (`size_t`, yes — beam width; `0` = unbounded).
+**Parameters**
+
+| Name | Type | Required | Description |
+|---|---|---|---|
+| `handle` | `void*` | yes | Store handle. |
+| `on` | `bool` | yes | Enable or disable. |
+| `beam` | `size_t` | yes | Beam width; `0` = unbounded. |
+
 **Returns:** `0` on success, `-1` on error.
+
+**Errors:** `-1` if the handle is `NULL`.
 
 ### `seraph_store_set_search_stream_threshold`
 
-Threshold-gate: `search` auto-streams at/above `n` frames. `0` disables the gate.
+Store size from which `search` uses the bounded walk. Default `50000`; `0` disables the gate. Runtime only.
 
 ```c
 int seraph_store_set_search_stream_threshold(void* handle, size_t n);
 ```
 
-**Parameters:** `handle` (`void*`, yes), `n` (`size_t`, yes — frame-count gate; `0` disables).
+**Parameters**
+
+| Name | Type | Required | Description |
+|---|---|---|---|
+| `handle` | `void*` | yes | Store handle. |
+| `n` | `size_t` | yes | Members searched under `"top"`. |
+
 **Returns:** `0` on success, `-1` on error.
+
+**Errors:** `-1` if the handle is `NULL`.
+
+### `seraph_store_set_seed_term`
+
+Weight of the seed term in parent selection. When the store has seeds, a new frame's parent is chosen by its similarity to the candidate plus `beta` times its similarity to the candidate's seed, which settles near-ties between seed regions. It affects the parent only; the stored embedding, the similarity edges and search results are unchanged. Default `0.6`; `0` disables it. Per-frame opt-out: `seed_term=False` on the put calls. Runtime only, not persisted.
+
+```c
+int seraph_store_set_seed_term(void* handle, float beta);
+```
+
+**Parameters**
+
+| Name | Type | Required | Description |
+|---|---|---|---|
+| `handle` | `void*` | yes | Store handle. |
+| `beta` | `float` | yes | Term weight (`>= 0`; `0` disables). |
+
+**Returns:** `0` on success, `-1` on error.
+
+**Errors:** `-1` if the handle is `NULL`.
+
+### `seraph_store_set_commit_ceiling_margin`
+
+Stop line of the walk that picks a new frame's parent and similarity edges, as a fraction of the best score it holds. Lower values look further for a parent and cost ingest time; higher values ingest faster with slightly worse placement. Default `0.85`. Runtime only, not persisted.
+
+```c
+int seraph_store_set_commit_ceiling_margin(void* handle, float m);
+```
+
+**Parameters**
+
+| Name | Type | Required | Description |
+|---|---|---|---|
+| `handle` | `void*` | yes | Store handle. |
+| `m` | `float` | yes | Ceiling slack; `1.0` is the tight stop. |
+
+**Returns:** `0` on success, `-1` on error.
+
+**Errors:** `-1` if the handle is `NULL`.
+
+### `seraph_store_set_sim_edge_policy`
+
+How a new frame chooses its similarity edges. By default the top `edge_budget` content frames above `tau_similarity`, the parent included and never a Genesis or Seed frame. `occlusion > 0` drops a candidate when a nearer kept neighbour already covers it (`1.0` strict; larger keeps more); `pool` widens the candidate list at ingest cost. Runtime only, not persisted; each frame records the edges it chose.
+
+```c
+int seraph_store_set_sim_edge_policy(
+    void* handle,
+    bool routing,
+    bool parent,
+    float occlusion,
+    size_t pool
+);
+```
+
+**Parameters**
+
+| Name | Type | Required | Description |
+|---|---|---|---|
+| `handle` | `void*` | yes | Store handle. |
+| `routing` | `bool` | yes | Allow edges to Genesis/Seed frames. |
+| `parent` | `bool` | yes | Allow an edge to the frame's own parent. |
+| `occlusion` | `float` | yes | `0` = top-k; `> 0` = occlusion pruning with this alpha. |
+| `pool` | `size_t` | yes | Candidates the commit walk returns; `0` = `edge_budget + 1`. |
+
+**Returns:** `0` on success, `-1` on error.
+
+**Errors:** `-1` if the handle is `NULL`.
+
+### `seraph_store_set_search_rank_mode`
+
+How result slots are filled by `search` and the reads built on it. `"cosine"` (the default) ranks every slot by similarity. `"two_channel"` gives the last `round(share * top_k)` slots to frames reached by a descent from the `doors` nearest eigenframes, bounded by `budget` frames, that the similarity ranking lacks. Runtime only, not persisted.
+
+```c
+int seraph_store_set_search_rank_mode(
+    void* handle,
+    uint8_t mode,
+    float share,
+    size_t doors,
+    size_t budget
+);
+```
+
+**Parameters**
+
+| Name | Type | Required | Description |
+|---|---|---|---|
+| `handle` | `void*` | yes | Store handle. |
+| `mode` | `uint8_t` | yes | Routing mode: `"best"`, `"top"` or `"all"`. |
+| `share` | `float` | yes | Fraction of `top_k` given to the descent channel (two_channel only). |
+| `doors` | `size_t` | yes | Eigenframes the descent enters at (two_channel only). |
+| `budget` | `size_t` | yes | Frames the descent admits before stopping (two_channel only). |
+
+**Returns:** `0` on success, `-1` on error (unknown mode).
+
+**Errors:** `-1` if the handle is `NULL`.
 
 ### `seraph_store_set_search_max_visits`
 
-Absolute Phase-2 visit budget, decoupled from `top_k`. `0` falls back to
-`top_k × multiplier`.
+Absolute visit budget for a search, independent of `top_k`. Default `50000`; `0` falls back to `top_k` times the legacy multiplier. Runtime only.
 
 ```c
 int seraph_store_set_search_max_visits(void* handle, size_t v);
 ```
 
-**Parameters:** `handle` (`void*`, yes), `v` (`size_t`, yes — absolute visit budget; `0` = multiplier fallback).
+**Parameters**
+
+| Name | Type | Required | Description |
+|---|---|---|---|
+| `handle` | `void*` | yes | Store handle. |
+| `v` | `size_t` | yes | Absolute visit budget; `0` = multiplier fallback. |
+
 **Returns:** `0` on success, `-1` on error.
+
+**Errors:** `-1` if the handle is `NULL`.
+
+### `seraph_store_set_search_ceiling_slack`
+
+How far past the current top-k a search keeps looking before it stops, as a cosine distance below the k-th best score. Smaller values stop sooner; larger values find more on weak-match queries at more cost. Default `0.05`; `0.10` is the completeness setting. `0` uses the multiplicative margin instead (`set_search_ceiling_margin`). Runtime only, not persisted.
+
+```c
+int seraph_store_set_search_ceiling_slack(void* handle, float slack);
+```
+
+**Parameters**
+
+| Name | Type | Required | Description |
+|---|---|---|---|
+| `handle` | `void*` | yes | Store handle. |
+| `slack` | `float` | yes | Cosine slack below the k-th best; `0` = multiplicative margin. |
+
+**Returns:** `0` on success, `-1` on error.
+
+**Errors:** `-1` if the handle is `NULL`.
+
+### `seraph_store_set_door_index`
+
+Use the door index for entry-point selection: an index over the eigenframes that replaces the full scan once the store has `door_index_min` of them (default `4096`). Default on. Entry selection is then approximate to the index's accuracy (see `set_door_index_ef`); replay and as-of reads always use the exact scan. Turning it on builds the index at once; off drops it. Runtime only, not persisted.
+
+```c
+int seraph_store_set_door_index(void* handle, bool on);
+```
+
+**Parameters**
+
+| Name | Type | Required | Description |
+|---|---|---|---|
+| `handle` | `void*` | yes | Store handle. |
+| `on` | `bool` | yes | `True` to pick entry points through the door index. |
+
+**Returns:** `0` on success, `-1` on error.
+
+**Errors:** `-1` if the handle is `NULL`.
+
+### `seraph_store_set_door_index_ef`
+
+Candidates the door index examines per query. Higher is closer to the exact scan at more cost per query. Default `128`. Runtime only, not persisted.
+
+```c
+int seraph_store_set_door_index_ef(void* handle, size_t ef);
+```
+
+**Parameters**
+
+| Name | Type | Required | Description |
+|---|---|---|---|
+| `handle` | `void*` | yes | Store handle. |
+| `ef` | `size_t` | yes | Candidates per query (at least the entry scan's 64). |
+
+**Returns:** `0` on success, `-1` on error.
+
+**Errors:** `-1` if the handle is `NULL`.
+
+### `seraph_store_vector_precision`
+
+The precision each frame's vector is stored at, fixed at create (`StoreConfig(vector_precision=...)`): `"codes4"` (4-bit codes, the default), `"fp32"`, `"fp16"`, `"bf16"` or `"fp64"`. Stores below format 5 report `"codes4"`.
+
+```c
+char* seraph_store_vector_precision(void* handle);
+```
+
+**Parameters**
+
+| Name | Type | Required | Description |
+|---|---|---|---|
+| `handle` | `void*` | yes | Store handle. |
+
+**Returns:** the precision name (free with `seraph_string_free`), or `NULL` on error.
+
+**Errors:** `NULL` on a `NULL` handle or a failed operation; `seraph_last_error` has the message.
+
+### `seraph_store_resident_precision`
+
+The precision search scores from: `"fp32"`, `"fp16"`, `"bf16"` or `"frame"` (no resident copy). The default is set at create (`StoreConfig(resident_precision=...)`) or derived from the vector precision when unset; `set_resident_precision` changes it at runtime.
+
+```c
+char* seraph_store_resident_precision(void* handle);
+```
+
+**Parameters**
+
+| Name | Type | Required | Description |
+|---|---|---|---|
+| `handle` | `void*` | yes | Store handle. |
+
+**Returns:** the precision name (free with `seraph_string_free`), or `NULL` on error.
+
+**Errors:** `NULL` on a `NULL` handle or a failed operation; `seraph_last_error` has the message.
+
+### `seraph_store_set_resident_precision`
+
+Change the precision search scores from and rebuild the resident copy at once. `"fp16"` and `"bf16"` halve its memory; `"frame"` keeps no resident copy, at some cost per search. Runtime only; the store's default is the one set at create.
+
+```c
+int seraph_store_set_resident_precision(void* handle, const char* name);
+```
+
+**Parameters**
+
+| Name | Type | Required | Description |
+|---|---|---|---|
+| `handle` | `void*` | yes | Store handle. |
+| `name` | `const char*` | yes | `"fp32"`, `"fp16"`, `"bf16"` or `"frame"`. |
+
+**Returns:** `0` on success, `-1` on error (unknown or reserved name).
+
+**Errors:** `-1` if the handle is `NULL`.
 
 ### `seraph_store_set_search_ceiling_margin`
 
-Stream ceiling slack margin. Values below `1.0` keep the beam exploring past the
-k-th-best score.
+Multiplicative stop line for search, used only when the slack (`set_search_ceiling_slack`) is `0`: search stops once nothing left can score above `m` times the k-th best. Default `0.85`. Runtime only, not persisted.
 
 ```c
 int seraph_store_set_search_ceiling_margin(void* handle, float m);
 ```
 
-**Parameters:** `handle` (`void*`, yes), `m` (`float`, yes — slack margin, default `1.0`).
+**Parameters**
+
+| Name | Type | Required | Description |
+|---|---|---|---|
+| `handle` | `void*` | yes | Store handle. |
+| `m` | `float` | yes | Fraction of the k-th best; `1.0` is the tight stop. |
+
 **Returns:** `0` on success, `-1` on error.
+
+**Errors:** `-1` if the handle is `NULL`.
 
 ### `seraph_store_set_search_arena`
 
-Toggle the Phase-2 contiguous pre-normalized embedding arena (cache-friendly
-per-visit cosine). Results are unchanged either way.
+Keep a contiguous resident copy of the vectors for search (default on). Off saves that memory at more cost per search; results are unchanged. Runtime only.
 
 ```c
 int seraph_store_set_search_arena(void* handle, bool on);
 ```
 
-**Parameters:** `handle` (`void*`, yes), `on` (`bool`, yes).
+**Parameters**
+
+| Name | Type | Required | Description |
+|---|---|---|---|
+| `handle` | `void*` | yes | Store handle. |
+| `on` | `bool` | yes | Enable or disable. |
+
 **Returns:** `0` on success, `-1` on error.
+
+**Errors:** `-1` if the handle is `NULL`.
 
 ### `seraph_store_set_search_adjacency`
 
-When on, the Phase-2 flood reads the pre-resolved, active-content-filtered
-search adjacency (no per-visit redirect resolution). Results are unchanged
-either way.
+Use the pre-resolved search adjacency (default on). Results are unchanged. Runtime only.
 
 ```c
 int seraph_store_set_search_adjacency(void* handle, bool on);
 ```
 
-**Parameters:** `handle` (`void*`, yes), `on` (`bool`, yes).
+**Parameters**
+
+| Name | Type | Required | Description |
+|---|---|---|---|
+| `handle` | `void*` | yes | Store handle. |
+| `on` | `bool` | yes | Enable or disable. |
+
 **Returns:** `0` on success, `-1` on error.
+
+**Errors:** `-1` if the handle is `NULL`.
 
 ### `seraph_store_set_walk_profile`
 
-DIAGNOSTIC: gate Phase-2 walk profiling (thread-local, zero-overhead off).
+Diagnostic: enable walk profiling for this thread (no overhead when off).
 
 ```c
 int seraph_store_set_walk_profile(void* handle, bool on);
 ```
 
-**Parameters:** `handle` (`void*`, yes), `on` (`bool`, yes).
+**Parameters**
+
+| Name | Type | Required | Description |
+|---|---|---|---|
+| `handle` | `void*` | yes | Store handle. |
+| `on` | `bool` | yes | Enable or disable. |
+
 **Returns:** `0` on success, `-1` on error.
+
+**Errors:** `-1` if the handle is `NULL`.
 
 ### `seraph_store_take_walk_profile`
 
-DIAGNOSTIC: read **and reset** the walk-profile accumulators.
+Diagnostic: read and reset the walk-profile accumulators.
 
 ```c
 char* seraph_store_take_walk_profile(void* handle);
 ```
 
-**Parameters:** `handle` (`void*`, yes).
+**Parameters**
+
+| Name | Type | Required | Description |
+|---|---|---|---|
+| `handle` | `void*` | yes | Store handle. |
+
 **Returns:** JSON `{"resolve_ns", "visited_ns", "score_ns", "push_ns", "visit_count"}` (free with `seraph_string_free`), or `NULL` on error.
+
+**Errors:** `NULL` on a `NULL` handle or a failed operation; `seraph_last_error` has the message.
 
 ### `seraph_store_entry_count`
 
-DIAGNOSTIC: number of Phase-1 entry points selected for a query.
+Diagnostic: the number of entry points a search for `query` would start from.
 
 ```c
 int64_t seraph_store_entry_count(void* handle, const float* query_embedding, size_t query_len);
 ```
 
-**Parameters:** `handle` (`void*`, yes), `query_embedding` (`const float*`, yes), `query_len` (`size_t`, yes).
+**Parameters**
+
+| Name | Type | Required | Description |
+|---|---|---|---|
+| `handle` | `void*` | yes | Store handle. |
+| `query_embedding` | `const float*` | yes | Query vector. |
+| `query_len` | `size_t` | yes | Length of `query`. |
+
 **Returns:** Entry count (`>= 0`), or `-1` on error.
+
+**Errors:** `NULL` on a `NULL` handle or a failed operation; `seraph_last_error` has the message.
 
 ### `seraph_store_last_search_visits`
 
-DIAGNOSTIC: nodes visited by the last streamed search (ops cost).
+Diagnostic: frames visited by the last `search_stream` call.
 
 ```c
 int64_t seraph_store_last_search_visits(void* handle);
 ```
 
-**Parameters:** `handle` (`void*`, yes).
+**Parameters**
+
+| Name | Type | Required | Description |
+|---|---|---|---|
+| `handle` | `void*` | yes | Store handle. |
+
 **Returns:** Visit count (`>= 0`), or `-1` on error.
+
+**Errors:** `NULL` on a `NULL` handle or a failed operation; `seraph_last_error` has the message.
 
 ### `seraph_migrate_store`
 
-Rebuild a store's topology while preserving everything else. Every frame is re-committed into a fresh destination at `dst_path` with its identity intact — same frame id, timestamp, content, embedding, metadata, `status_ref` and `status_sources` — but with its parent selected against the live destination.
-
-Preserving ids is what makes this a migration rather than a rebuild: typed-edge sentinels, supersede sentinels and redirect targets all reference frames by id, so they stay valid without remapping and reconstruct on the destination's first open.
-
-Use it to correct a topology built by an older parent-selection strategy or by the two-phase batch path, and as the carrier for frame-format changes — the destination is always created at the current format version. Embeddings are carried verbatim; this does **not** re-encode, and a destination model mismatch is rejected. Use `seraph_reencode_store` when the embeddings themselves must change.
-
-Eigenframe status is deliberately not carried: source eigenframes are committed as `Active` so the destination promotes on its own geometry. Watermarks are recomputed from each frame's new parent, so they differ from the source by construction; the destination chain is internally valid and `seraph_store_verify` passes.
+Rebuild a store into a fresh one at `dst_path`: every frame is re-committed with its identity intact (id, timestamp, content, embedding, metadata, status references) and its parent chosen against the live destination, so sentinels and redirects that name frames by id stay valid. Use it to correct an old topology or to carry a store to the current format or another `vector_precision` (`config`). Embeddings are carried as they are; use `reencode_store` to change them. Watermarks are recomputed, so they differ from the source; the destination verifies. Free function; the Python binding releases the GIL for the whole migration.
 
 ```c
 char* seraph_migrate_store(const char* src_path, const char* dst_path);
@@ -476,13 +741,9 @@ char* rep = seraph_migrate_store("old.sfg", "new.sfg");
 seraph_string_free(rep);
 ```
 
----
-
 ### `seraph_reencode_store`
 
-Re-encode a source store into a fresh **v3** destination store (`format_version = 3`). Streams active-content frames from `src_path`, re-encodes them with `model_id` on a dedicated encoder thread, and bulk-ingests the resulting f32 embeddings. The `.gidx` is not written (frame log only). Each frame records the similarity neighbours it committed to, so the first open reads them back rather than re-deriving them by walking — a bare `.sfg` costs the frame-log parse, not a commit-time walk per frame.
-
-Frames are ingested in source commit order, each parent selected against the live destination, so the rebuilt store carries a properly built parent tree following the source's own accumulation order. `pbatch` therefore controls buffering only, not topology.
+Build a fresh store from the content of an existing one, re-encoding every frame with a new model. Frames are ingested in source commit order, so the destination's topology is the one a per-frame ingest would produce.
 
 ```c
 int seraph_reencode_store(
@@ -501,14 +762,14 @@ int seraph_reencode_store(
 
 | Name | Type | Required | Description |
 |---|---|---|---|
-| `src_path` | `const char*` | yes | Source `.sfg` to re-encode from. |
-| `dst_path` | `const char*` | yes | Destination `.sfg` (overwritten if present). |
-| `model_id` | `const char*` | yes | Embedding model for the destination genesis. |
-| `eigen_threshold` | `uint32_t` | yes | In-degree promotion threshold for the destination. |
-| `n_max` | `size_t` | yes | Cap on frames re-encoded; `0` = all active-content frames. |
-| `pbatch` | `size_t` | yes | Frames per ingest batch (`put_batch_incremental`); `0` → default 2000. |
-| `ebatch` | `size_t` | yes | Frames per encode batch; `0` → default 16. |
-| `out_n` | `size_t*` | no | Out: number of frames ingested. Ignored if `NULL`. |
+| `src_path` | `const char*` | yes | Source .sfg path. |
+| `dst_path` | `const char*` | yes | Destination .sfg path; must not exist. |
+| `model_id` | `const char*` | yes | Embedding model ID; `NULL` for the default model. |
+| `eigen_threshold` | `uint32_t` | yes | Eigenframe promotion threshold for the destination. |
+| `n_max` | `size_t` | yes | Stop after this many frames; 0 means all. |
+| `pbatch` | `size_t` | yes | Write buffering batch size; does not affect topology. |
+| `ebatch` | `size_t` | yes | Encode batch size. |
+| `out_n` | `size_t*` | yes | Out: n. |
 
 **Returns:** `0` on success, `-1` on error.
 
@@ -522,16 +783,13 @@ int seraph_reencode_store(
 
 ### `seraph_store_create_encrypted`
 
-Create a new store with AES-256-GCM encryption at rest. Content fields are
-encrypted with a random DEK wrapped by an Argon2id-derived KEK. Structural
-metadata (watermarks, parent links) stays plaintext for keyless chain
-verification.
+Create a store encrypted at rest with AES-256-GCM. Content is encrypted under a key derived from the passphrase with Argon2id; watermarks and parent links stay in the clear so the chain verifies without the passphrase. Licensed feature.
 
 ```c
 void* seraph_store_create_encrypted(
     const char* path,
-    const char* model_id,      // or NULL
-    const char* config_json,   // or NULL
+    const char* model_id,
+    const char* config_json,
     const uint8_t* passphrase,
     size_t passphrase_len
 );
@@ -541,11 +799,11 @@ void* seraph_store_create_encrypted(
 
 | Name | Type | Required | Description |
 |---|---|---|---|
-| `path` | `const char*` | yes | Path for the new encrypted `.sfg` file. |
-| `model_id` | `const char*` | no | Embedding model ID. `NULL` → default. |
-| `config_json` | `const char*` | no | Config overrides (see `seraph_store_create`). `NULL` → defaults. |
-| `passphrase` | `const uint8_t*` | yes | Passphrase bytes (not NUL-terminated; length given separately). |
-| `passphrase_len` | `size_t` | yes | Length of `passphrase` in bytes. |
+| `path` | `const char*` | yes | Filesystem path for the .sfg file. |
+| `model_id` | `const char*` | yes | Embedding model ID; `NULL` for the default model. |
+| `config_json` | `const char*` | yes | JSON config overrides; `NULL` for the defaults. |
+| `passphrase` | `const uint8_t*` | yes | Passphrase the content key is derived from. |
+| `passphrase_len` | `size_t` | yes | Length of `passphrase`. |
 
 **Returns:** Store handle, or `NULL` on error.
 
@@ -563,7 +821,7 @@ seraph_store_close(store);
 
 ### `seraph_store_open_encrypted`
 
-Open an existing encrypted store.
+Open an encrypted store with a passphrase.
 
 ```c
 void* seraph_store_open_encrypted(
@@ -578,8 +836,8 @@ void* seraph_store_open_encrypted(
 | Name | Type | Required | Description |
 |---|---|---|---|
 | `path` | `const char*` | yes | Path to an existing encrypted `.sfg` file. |
-| `passphrase` | `const uint8_t*` | yes | Passphrase bytes used at creation. |
-| `passphrase_len` | `size_t` | yes | Length of `passphrase` in bytes. |
+| `passphrase` | `const uint8_t*` | yes | Decryption passphrase. |
+| `passphrase_len` | `size_t` | yes | Length of `passphrase`. |
 
 **Returns:** Store handle, or `NULL` on error.
 
@@ -600,13 +858,15 @@ void* store = seraph_store_open_encrypted(
 
 ### `seraph_store_put`
 
-Ingest a frame with pre-computed embedding.
+Ingest content with a pre-computed embedding.
 
 ```c
 char* seraph_store_put(
     void* handle,
-    const uint8_t* content, size_t content_len,
-    const float* embedding, size_t embedding_len
+    const uint8_t* content,
+    size_t content_len,
+    const float* embedding,
+    size_t embedding_len
 );
 ```
 
@@ -615,10 +875,10 @@ char* seraph_store_put(
 | Name | Type | Required | Description |
 |---|---|---|---|
 | `handle` | `void*` | yes | Store handle. |
-| `content` | `const uint8_t*` | yes | Content bytes (any binary payload). |
+| `content` | `const uint8_t*` | yes | Raw content bytes. |
 | `content_len` | `size_t` | yes | Length of `content`. |
-| `embedding` | `const float*` | yes | Embedding vector. |
-| `embedding_len` | `size_t` | yes | Vector length; must equal the store dimension. |
+| `embedding` | `const float*` | yes | Embedding vector; length must equal the store dimension. |
+| `embedding_len` | `size_t` | yes | Length of `embedding`. |
 
 **Returns:** Frame ID string (free with `seraph_string_free`), or `NULL` on error.
 
@@ -634,13 +894,15 @@ seraph_string_free(fid);
 
 ### `seraph_store_put_with_metadata`
 
-Ingest a frame with an attached JSON metadata object.
+Ingest content with an embedding and JSON metadata.
 
 ```c
 char* seraph_store_put_with_metadata(
     void* handle,
-    const uint8_t* content, size_t content_len,
-    const float* embedding, size_t embedding_len,
+    const uint8_t* content,
+    size_t content_len,
+    const float* embedding,
+    size_t embedding_len,
     const char* metadata_json
 );
 ```
@@ -650,11 +912,11 @@ char* seraph_store_put_with_metadata(
 | Name | Type | Required | Description |
 |---|---|---|---|
 | `handle` | `void*` | yes | Store handle. |
-| `content` | `const uint8_t*` | yes | Content bytes. |
+| `content` | `const uint8_t*` | yes | Raw content bytes. |
 | `content_len` | `size_t` | yes | Length of `content`. |
 | `embedding` | `const float*` | yes | Embedding vector. |
-| `embedding_len` | `size_t` | yes | Vector length; must equal the store dimension. |
-| `metadata_json` | `const char*` | yes | JSON object string. Use `"{}"` for none. |
+| `embedding_len` | `size_t` | yes | Length of `embedding`. |
+| `metadata_json` | `const char*` | yes | JSON object string of metadata key-value pairs. |
 
 **Returns:** Frame ID string (free with `seraph_string_free`), or `NULL` on error.
 
@@ -670,16 +932,7 @@ seraph_string_free(fid);
 
 ### `seraph_store_put_batch`
 
-Deprecated alias of `seraph_store_put_batch_incremental`, kept so existing
-binaries keep linking.
-
-The two-phase snapshot path this name used to run was removed from the engine:
-it froze parent selection against the pre-batch store, so no frame in a batch
-could attach to another, and a bulk load into a new store collapsed into a flat
-star on genesis with no frame ever eligible for eigenframe promotion. Calls now
-take the incremental path: geometry identical to sequential `put`, buffered
-writes. Leaves the store buffered — call `seraph_store_sync` when the load is
-done. New code should call `seraph_store_put_batch_incremental` directly.
+Deprecated alias of `put_batch_incremental`; calls take the incremental path. Leaves the store buffered: call `flush()` when the load is done.
 
 ```c
 char* seraph_store_put_batch(void* handle, const char* items_json);
@@ -690,7 +943,7 @@ char* seraph_store_put_batch(void* handle, const char* items_json);
 | Name | Type | Required | Description |
 |---|---|---|---|
 | `handle` | `void*` | yes | Store handle. |
-| `items_json` | `const char*` | yes | JSON array of `{content_b64, embedding, metadata?}` objects. |
+| `items_json` | `const char*` | yes | JSON array of `{"content": "...", "embedding": [...]}` items (`content_b64` for binary content). |
 
 **Returns:** JSON array of frame IDs (free with `seraph_string_free`), or `NULL` on error.
 
@@ -705,18 +958,9 @@ char* ids = seraph_store_put_batch(store,
 seraph_string_free(ids);
 ```
 
----
-
 ### `seraph_store_put_batch_incremental`
 
-Batch ingest in which each parent is selected against the live store, so a frame
-may attach to an earlier frame of the same batch. This is the bulk-ingest path:
-it produces the same topology as calling `seraph_store_put` in a loop, at a
-fraction of the cost, because writes are buffered rather than flushed per frame.
-
-Insertion order affects the resulting tree — order the batch meaningfully before
-calling. The store is left in buffered mode; call `seraph_store_sync` when the
-load is finished.
+Bulk ingest. Each item's parent is chosen against the live store, so an item may attach to an earlier item of the same batch, and the result is identical to calling `put` in a loop at a fraction of the cost. Insertion order shapes the tree, so order the batch meaningfully. The store is left buffered: call `flush()` when the load is finished.
 
 ```c
 char* seraph_store_put_batch_incremental(void* handle, const char* items_json);
@@ -727,7 +971,7 @@ char* seraph_store_put_batch_incremental(void* handle, const char* items_json);
 | Name | Type | Required | Description |
 |---|---|---|---|
 | `handle` | `void*` | yes | Store handle. |
-| `items_json` | `const char*` | yes | JSON array of `{content_b64, embedding, metadata?}` objects. |
+| `items_json` | `const char*` | yes | JSON array of `{"content": "...", "embedding": [...]}` items (`content_b64` for binary content). |
 
 **Returns:** JSON array of frame IDs (free with `seraph_string_free`), or `NULL` on error.
 
@@ -744,12 +988,7 @@ seraph_store_sync(store);
 
 ### `seraph_store_commit_marker`
 
-Commit an application marker: a System sentinel with a zero embedding under
-the system root. It has no geometric footprint — never an entry point, never a
-parent, never returned by search — but it is durable in the frame log like any
-other frame. Use it for application records that belong with the store (a fault
-ledger, a run manifest, a review note). `kind` becomes the content prefix
-`_{kind}:` and is echoed in the metadata as `_marker`.
+Commit an application marker: a System frame with no embedding that search never returns, durable in the store like any other frame. Use it for application records that belong with the store (a run manifest, a review note). `kind` becomes the content prefix `_{kind}:` and is echoed in the metadata as `_marker`.
 
 ```c
 char* seraph_store_commit_marker(void* handle, const char* kind, const char* metadata_json);
@@ -760,8 +999,8 @@ char* seraph_store_commit_marker(void* handle, const char* kind, const char* met
 | Name | Type | Required | Description |
 |---|---|---|---|
 | `handle` | `void*` | yes | Store handle. |
-| `kind` | `const char*` | yes | Marker kind. Non-empty, no `:` and no whitespace. Kinds the load path interprets (`promote`, `supersede`, `seal`, `seraph_seeds`, `seraph_warp_cal`, anything starting `seraph`; case-insensitive, with or without a leading `_`) are refused. |
-| `metadata_json` | `const char*` | no | JSON **object**; `NULL` or empty means none. Keys the load path acts on (`_promote`, `_supersede`, any `_seraph*`) are refused, so a marker can never forge a promotion, a supersede or a registry on reopen. |
+| `kind` | `const char*` | yes | Marker kind. Non-empty, no `:` and no whitespace. The kinds the load path interprets (`promote`, `supersede`, `seal`, `seraph_seeds`, `seraph_warp_cal`, anything starting `seraph`, case-insensitive, with or without a leading `_`) are refused. |
+| `metadata_json` | `const char*` | yes | JSON object. Keys the load path acts on (`_promote`, `_supersede`, any `_seraph*`) are refused, so a marker can never forge a promotion, a supersede or a registry on reopen. |
 
 **Returns:** The marker's frame ID (free with `seraph_string_free`), or `NULL` on error.
 
@@ -780,9 +1019,11 @@ char* seraph_store_markers(void* handle, const char* kind);
 | Name | Type | Required | Description |
 |---|---|---|---|
 | `handle` | `void*` | yes | Store handle. |
-| `kind` | `const char*` | yes | The kind passed to `seraph_store_commit_marker`. |
+| `kind` | `const char*` | yes | The kind passed to `commit_marker`. |
 
 **Returns:** JSON array of `{"frame_id": "...", "metadata": {...}}` (free with `seraph_string_free`); `[]` for an unknown kind; `NULL` on error.
+
+**Errors:** `NULL` on a `NULL` handle or a failed operation; `seraph_last_error` has the message.
 
 ---
 
@@ -790,12 +1031,13 @@ char* seraph_store_markers(void* handle, const char* kind);
 
 ### `seraph_store_search`
 
-Graph-native ANN search for the nearest frames to a query embedding.
+Search for the frames nearest a query embedding, ranked by similarity.
 
 ```c
 int seraph_store_search(
     void* handle,
-    const float* embedding, size_t embedding_len,
+    const float* embedding,
+    size_t embedding_len,
     size_t top_k,
     float tau,
     SeraphHit** out_hits,
@@ -809,17 +1051,15 @@ int seraph_store_search(
 |---|---|---|---|
 | `handle` | `void*` | yes | Store handle. |
 | `embedding` | `const float*` | yes | Query vector. |
-| `embedding_len` | `size_t` | yes | Vector length; must equal the store dimension. |
-| `top_k` | `size_t` | yes | Maximum number of hits to return. |
-| `tau` | `float` | yes | Minimum similarity threshold. Pass `0.0` for no filtering. |
-| `out_hits` | `SeraphHit**` | yes | Out: array of hits. Free with `seraph_hits_free`. |
-| `out_count` | `size_t*` | yes | Out: number of hits written. |
+| `embedding_len` | `size_t` | yes | Length of `embedding`. |
+| `top_k` | `size_t` | yes | Maximum number of hits. |
+| `tau` | `float` | yes | Similarity floor (cosine); `0.0` disables it. |
+| `out_hits` | `SeraphHit**` | yes | Out: hits. Free with `seraph_hits_free`. |
+| `out_count` | `size_t*` | yes | Out: count. |
 
 **Returns:** `0` on success, negative on error.
 
 **Errors:** Negative if the handle is `NULL` or the embedding dimension mismatches.
-
-**Result struct** — see [`SeraphHit`](#seraphhit).
 
 **Example**
 
@@ -834,7 +1074,7 @@ if (seraph_store_search(store, q, dim, 10, 0.0f, &hits, &n) == 0) {
 
 ### `seraph_store_search_text`
 
-Search by text using the store's built-in encoder (store must have an encoder).
+Encode a text query with the store's model and search in one call. The encoder loads on first use.
 
 ```c
 int seraph_store_search_text(
@@ -852,11 +1092,11 @@ int seraph_store_search_text(
 | Name | Type | Required | Description |
 |---|---|---|---|
 | `handle` | `void*` | yes | Store handle. |
-| `query` | `const char*` | yes | Query text (UTF-8). |
+| `query` | `const char*` | yes | Query text. |
 | `top_k` | `size_t` | yes | Maximum number of hits. |
-| `tau` | `float` | yes | Minimum similarity threshold (`0.0` = none). |
-| `out_hits` | `SeraphHit**` | yes | Out: hit array. Free with `seraph_hits_free`. |
-| `out_count` | `size_t*` | yes | Out: number of hits. |
+| `tau` | `float` | yes | Similarity floor (cosine); `0.0` disables it. |
+| `out_hits` | `SeraphHit**` | yes | Out: hits. Free with `seraph_hits_free`. |
+| `out_count` | `size_t*` | yes | Out: count. |
 
 **Returns:** `0` on success, negative on error.
 
@@ -872,7 +1112,7 @@ seraph_hits_free(hits, n);
 
 ### `seraph_store_search_opts`
 
-Search with options. Identical to `seraph_store_search` plus `include_superseded`: when `true`, plainly-superseded (soft-forgotten) frames still resident in the graph are opted back into results. Consolidated sources resolve through their redirect and are not resurfaced. Pass `false` for the default (`seraph_store_search`) behaviour.
+Search with a `SearchOpts` options object: `top_k`, `tau_similarity`, `max_depth`, `include_superseded`, and the time-window fields (`order`, `after_us`, `before_us`).
 
 ```c
 int seraph_store_search_opts(
@@ -893,18 +1133,20 @@ int seraph_store_search_opts(
 |---|---|---|---|
 | `handle` | `void*` | yes | Store handle. |
 | `embedding` | `const float*` | yes | Query vector. |
-| `embedding_len` | `size_t` | yes | Query vector length (must match store dim). |
+| `embedding_len` | `size_t` | yes | Length of `embedding`. |
 | `top_k` | `size_t` | yes | Maximum number of hits. |
-| `tau` | `float` | yes | Minimum similarity threshold (`0.0` = none). |
-| `include_superseded` | `bool` | yes | `true` opts soft-forgotten frames back into results; `false` = default `seraph_store_search` behaviour. |
-| `out_hits` | `SeraphHit**` | yes | Out: hit array. Free with `seraph_hits_free`. |
-| `out_count` | `size_t*` | yes | Out: number of hits. |
+| `tau` | `float` | yes | Similarity floor (cosine); `0.0` disables it. |
+| `include_superseded` | `bool` | yes | `true` opts soft-forgotten frames back into results. |
+| `out_hits` | `SeraphHit**` | yes | Out: hits. Free with `seraph_hits_free`. |
+| `out_count` | `size_t*` | yes | Out: count. |
 
 **Returns:** `0` on success, negative on error.
 
+**Errors:** `-1` if the handle is `NULL`.
+
 ### `seraph_store_search_temporal`
 
-Search with a temporal view. Relevance selection is identical to `seraph_store_search_opts` — entry points, traversal, tau, and top_k stay relevance-based. `after_us`/`before_us` form an inclusive visibility window on the frame timestamp (microseconds since epoch, `0` = unbounded on that side): out-of-window frames are still traversed as routing nodes but cannot occupy result slots, so `top_k` fills with in-window frames. `order` reorders the already-selected top_k set as pure presentation (stable sort by timestamp; scores and confidences untouched). `order = 0` with both bounds `0` matches `seraph_store_search_opts` exactly.
+Search with a time window. Relevance selection is unchanged; `after_us` and `before_us` (microseconds since the epoch) set an inclusive window on which frames may fill result slots, and with `before_us` set the search runs over the store as it stood at that time. `order` sorts the selected results by time without changing their scores. In Python the window travels in `SearchOpts`.
 
 ```c
 int seraph_store_search_temporal(
@@ -928,26 +1170,93 @@ int seraph_store_search_temporal(
 |---|---|---|---|
 | `handle` | `void*` | yes | Store handle. |
 | `embedding` | `const float*` | yes | Query vector. |
-| `embedding_len` | `size_t` | yes | Query vector length (must match store dim). |
+| `embedding_len` | `size_t` | yes | Length of `embedding`. |
 | `top_k` | `size_t` | yes | Maximum number of hits. |
-| `tau` | `float` | yes | Minimum similarity threshold (`0.0` = none). |
-| `include_superseded` | `int` | yes | Non-zero opts soft-forgotten frames back into results (as `seraph_store_search_opts`). |
-| `order` | `int` | yes | Presentation order: `0` = relevance (score-ranked), `1` = most_recent (timestamp descending), `2` = oldest (timestamp ascending). |
-| `after_us` | `uint64_t` | yes | Inclusive lower bound on frame timestamp (µs since epoch); `0` = unbounded. |
-| `before_us` | `uint64_t` | yes | Inclusive upper bound on frame timestamp (µs since epoch); `0` = unbounded. |
-| `out_hits` | `SeraphHit**` | yes | Out: hit array. Free with `seraph_hits_free`. |
-| `out_count` | `size_t*` | yes | Out: number of hits. |
+| `tau` | `float` | yes | Similarity floor (cosine); `0.0` disables it. |
+| `include_superseded` | `int` | yes | `true` opts soft-forgotten frames back into results. |
+| `order` | `int` | yes | Result order: relevance, or by time. |
+| `after_us` | `uint64_t` | yes | Earliest commit time a result may have; unbounded when unset. |
+| `before_us` | `uint64_t` | yes | Latest commit time a result may have; the search runs over the store as it stood then. |
+| `out_hits` | `SeraphHit**` | yes | Out: hits. Free with `seraph_hits_free`. |
+| `out_count` | `size_t*` | yes | Out: count. |
 
 **Returns:** `0` on success, negative on error (including an invalid `order`).
 
+**Errors:** `-1` if the handle is `NULL`.
+
+### `seraph_store_search_stream`
+
+Search through the bounded walk with an explicit beam width and visit budget, recording the visit count for `last_search_visits`. With the store's own beam and budget it returns the same results as `search`.
+
+```c
+int seraph_store_search_stream(
+    void* handle,
+    const float* embedding,
+    size_t embedding_len,
+    size_t top_k,
+    float tau,
+    size_t beam_width,
+    size_t max_visits,
+    SeraphHit** out_hits,
+    size_t* out_count
+);
+```
+
+**Parameters**
+
+| Name | Type | Required | Description |
+|---|---|---|---|
+| `handle` | `void*` | yes | Store handle. |
+| `embedding` | `const float*` | yes | Query vector. |
+| `embedding_len` | `size_t` | yes | Length of `embedding`. |
+| `top_k` | `size_t` | yes | Maximum number of hits. |
+| `tau` | `float` | yes | Similarity floor (cosine); `0.0` disables it. |
+| `beam_width` | `size_t` | yes | Frontier entries expanded per round; `0` = unbounded. |
+| `max_visits` | `size_t` | yes | Visit budget; `0` = the store's `search_max_visits`. |
+| `out_hits` | `SeraphHit**` | yes | Out: hits. Free with `seraph_hits_free`. |
+| `out_count` | `size_t*` | yes | Out: count. |
+
+**Returns:** `0` on success, `-1` on error.
+
+**Errors:** `-1` if the handle is `NULL`.
+
+### `seraph_store_search_with_trace`
+
+Search returning the hits and the frames visited, in visit order.
+
+```c
+char* seraph_store_search_with_trace(
+    void* handle,
+    const float* embedding,
+    size_t embedding_len,
+    size_t top_k,
+    float tau
+);
+```
+
+**Parameters**
+
+| Name | Type | Required | Description |
+|---|---|---|---|
+| `handle` | `void*` | yes | Store handle. |
+| `embedding` | `const float*` | yes | Query vector. |
+| `embedding_len` | `size_t` | yes | Length of `embedding`. |
+| `top_k` | `size_t` | yes | Maximum number of hits. |
+| `tau` | `float` | yes | Similarity floor (cosine); `0.0` disables it. |
+
+**Returns:** JSON `{"hits": [{"frame_id", "score", "confidence", "path_length"}], "trace": [{"frame_id", "depth", "score", "visit_order", "source", "parent_id"}]}` (free with `seraph_string_free`), or `NULL` on error.
+
+**Errors:** `NULL` on a `NULL` handle or a failed operation; `seraph_last_error` has the message.
+
 ### `seraph_store_search_with_warp`
 
-Search with warp-field steering (target pull + suppression).
+Search with warp-field steering: the query is pulled toward `targets` and away from `suppress` before the search.
 
 ```c
 int seraph_store_search_with_warp(
     void* handle,
-    const float* query_embedding, size_t query_len,
+    const float* query_embedding,
+    size_t query_len,
     const char* targets_json,
     const char* suppress_json,
     const char* profile,
@@ -965,27 +1274,15 @@ int seraph_store_search_with_warp(
 |---|---|---|---|
 | `handle` | `void*` | yes | Store handle. |
 | `query_embedding` | `const float*` | yes | Query vector. |
-| `query_len` | `size_t` | yes | Vector length. |
-| `targets_json` | `const char*` | yes | Warp entry array (pull). `[]`, `"null"`, or `""` = none. |
-| `suppress_json` | `const char*` | yes | Warp entry array (suppression). Same empty conventions. |
-| `profile` | `const char*` | yes | `"routing"`, `"saturation"`, or `"bounded"`. Any other value is an error. |
-| `bound_k` | `float` | yes | Suppression-norm cap. Used only by the `"bounded"` profile. |
+| `query_len` | `size_t` | yes | Length of `query`. |
+| `targets_json` | `const char*` | yes | (embedding, magnitude) pull pairs. |
+| `suppress_json` | `const char*` | yes | (embedding, magnitude) suppression pairs. |
+| `profile` | `const char*` | yes | `"routing"`, `"saturation"`, or `"bounded"`. |
+| `bound_k` | `float` | yes | Suppression-norm cap (used only by `"bounded"`). |
 | `top_k` | `size_t` | yes | Maximum number of hits. |
-| `tau` | `float` | yes | Minimum similarity threshold. |
-| `out_hits` | `SeraphHit**` | yes | Out: hit array. Free with `seraph_hits_free`. |
-| `out_count` | `size_t*` | yes | Out: number of hits. |
-
-**Warp entry JSON format** (`targets_json` / `suppress_json`): a JSON **array of
-objects**, each with an `embedding` array and a `magnitude` number, read by key.
-A positional `[embedding, magnitude]` pair is **not** accepted — it fails with
-`warp entry missing embedding`.
-
-```json
-[
-  { "embedding": [0.012, -0.044], "magnitude": 0.2 },
-  { "embedding": [0.103,  0.071], "magnitude": 0.5 }
-]
-```
+| `tau` | `float` | yes | Similarity floor (cosine); `0.0` disables it. |
+| `out_hits` | `SeraphHit**` | yes | Out: hits. Free with `seraph_hits_free`. |
+| `out_count` | `size_t*` | yes | Out: count. |
 
 **Returns:** `0` on success, negative on error.
 
@@ -1003,12 +1300,13 @@ seraph_hits_free(hits, n);
 
 ### `seraph_store_search_with_warp_spec`
 
-Search with a full WarpSpec JSON in one call.
+Search steered by a warp specification in one call. Frame-ID targets and named magnitudes in the spec are resolved against the store.
 
 ```c
 int seraph_store_search_with_warp_spec(
     void* handle,
-    const float* query_embedding, size_t query_len,
+    const float* query_embedding,
+    size_t query_len,
     const char* warp_spec_json,
     size_t top_k,
     float tau,
@@ -1023,12 +1321,12 @@ int seraph_store_search_with_warp_spec(
 |---|---|---|---|
 | `handle` | `void*` | yes | Store handle. |
 | `query_embedding` | `const float*` | yes | Query vector. |
-| `query_len` | `size_t` | yes | Vector length. |
-| `warp_spec_json` | `const char*` | yes | Full WarpSpec JSON. [PLACEHOLDER: WarpSpec JSON schema] |
+| `query_len` | `size_t` | yes | Length of `query`. |
+| `warp_spec_json` | `const char*` | yes | WarpSpec JSON in the `seraph_store_search_with_warp_spec` format. |
 | `top_k` | `size_t` | yes | Maximum number of hits. |
-| `tau` | `float` | yes | Minimum similarity threshold. |
-| `out_hits` | `SeraphHit**` | yes | Out: hit array. Free with `seraph_hits_free`. |
-| `out_count` | `size_t*` | yes | Out: number of hits. |
+| `tau` | `float` | yes | Similarity floor (cosine); `0.0` disables it. |
+| `out_hits` | `SeraphHit**` | yes | Out: hits. Free with `seraph_hits_free`. |
+| `out_count` | `size_t*` | yes | Out: count. |
 
 **Returns:** `0` on success, negative on error.
 
@@ -1044,7 +1342,7 @@ seraph_hits_free(hits, n);
 
 ### `seraph_store_fixup_warp`
 
-Run the warp-calibration fixup: sweep the store's own encoder + corpus and, if the result has drifted from the persisted calibration (or none exists), persist a new calibration sentinel and adopt it. No-op on an undeveloped store. Call from the single writer after open.
+Refresh the store's warp calibration from its own corpus when the persisted one has drifted or none exists, and persist the result. Call from the single writer after open.
 
 ```c
 int seraph_store_fixup_warp(void* handle);
@@ -1058,9 +1356,11 @@ int seraph_store_fixup_warp(void* handle);
 
 **Returns:** `1` if it (re)calibrated, `0` if it skipped (not stale / geometry not developed), `-1` on error.
 
+**Errors:** `-1` if the handle is `NULL`.
+
 ### `seraph_store_warp_calibration`
 
-Return the store's resident warp calibration as a JSON object (`{"routing": f32, "saturation": f32, ...}`), or the literal `null` if the store has not been calibrated. Named-magnitude warp resolves against this.
+The store's resident warp calibration as a mapping from named magnitude to value, or `None` if the store has not been calibrated. Named-magnitude warps resolve against this; there are no built-in presets.
 
 ```c
 char* seraph_store_warp_calibration(void* handle);
@@ -1074,13 +1374,15 @@ char* seraph_store_warp_calibration(void* handle);
 
 **Returns:** A newly-allocated JSON string (caller frees with `seraph_string_free`), or `null` on a null handle.
 
+**Errors:** `NULL` on a `NULL` handle or a failed operation; `seraph_last_error` has the message.
+
 ---
 
 ## Frame Access
 
 ### `seraph_store_get_frame`
 
-Fetch all fields of a frame as JSON.
+Get a frame by ID, with its full data including embedding and metadata.
 
 ```c
 char* seraph_store_get_frame(void* handle, const char* frame_id);
@@ -1108,12 +1410,14 @@ if (json) { /* parse */ seraph_string_free(json); }
 
 ### `seraph_store_get_content`
 
-Fetch a frame's raw content bytes.
+A frame's content bytes by ID, without the rest of the frame.
 
 ```c
 int seraph_store_get_content(
-    void* handle, const char* frame_id,
-    uint8_t** out_content, size_t* out_len
+    void* handle,
+    const char* frame_id,
+    uint8_t** out_content,
+    size_t* out_len
 );
 ```
 
@@ -1123,8 +1427,8 @@ int seraph_store_get_content(
 |---|---|---|---|
 | `handle` | `void*` | yes | Store handle. |
 | `frame_id` | `const char*` | yes | Frame ID. |
-| `out_content` | `uint8_t**` | yes | Out: content bytes. Free with `seraph_bytes_free`. |
-| `out_len` | `size_t*` | yes | Out: content length. |
+| `out_content` | `uint8_t**` | yes | Out: content. |
+| `out_len` | `size_t*` | yes | Out: len. |
 
 **Returns:** `0` on success, negative on error.
 
@@ -1141,12 +1445,14 @@ if (seraph_store_get_content(store, fid, &buf, &len) == 0) {
 
 ### `seraph_store_get_embedding`
 
-Fetch a frame's embedding into a freshly allocated buffer.
+A frame's embedding by ID, as an owned vector.
 
 ```c
 int seraph_store_get_embedding(
-    void* handle, const char* frame_id,
-    float** out_embedding, size_t* out_dim
+    void* handle,
+    const char* frame_id,
+    float** out_embedding,
+    size_t* out_dim
 );
 ```
 
@@ -1156,8 +1462,8 @@ int seraph_store_get_embedding(
 |---|---|---|---|
 | `handle` | `void*` | yes | Store handle. |
 | `frame_id` | `const char*` | yes | Frame ID. |
-| `out_embedding` | `float**` | yes | Out: float array. Free with `seraph_floats_free`. |
-| `out_dim` | `size_t*` | yes | Out: dimensionality. |
+| `out_embedding` | `float**` | yes | Out: embedding. |
+| `out_dim` | `size_t*` | yes | Out: dim. |
 
 **Returns:** `0` on success, negative on error.
 
@@ -1173,12 +1479,15 @@ if (seraph_store_get_embedding(store, fid, &emb, &dim) == 0)
 
 ### `seraph_store_get_embedding_into`
 
-Zero-copy variant: writes the embedding into a caller-supplied buffer.
+Copy a frame's embedding into a caller-owned buffer, with no allocation.
 
 ```c
 int seraph_store_get_embedding_into(
-    void* handle, const char* frame_id,
-    float* buf, size_t buf_len, size_t* out_written
+    void* handle,
+    const char* frame_id,
+    float* buf,
+    size_t buf_len,
+    size_t* out_written
 );
 ```
 
@@ -1188,9 +1497,9 @@ int seraph_store_get_embedding_into(
 |---|---|---|---|
 | `handle` | `void*` | yes | Store handle. |
 | `frame_id` | `const char*` | yes | Frame ID. |
-| `buf` | `float*` | yes | Caller-owned destination buffer. |
-| `buf_len` | `size_t` | yes | Buffer capacity (elements). |
-| `out_written` | `size_t*` | yes | Out: number of elements written. |
+| `buf` | `float*` | yes | Caller-owned buffer of at least the store's dimension. |
+| `buf_len` | `size_t` | yes | Length of `buf`. |
+| `out_written` | `size_t*` | yes | Out: written. |
 
 **Returns:** `0` on success, negative on error.
 
@@ -1205,15 +1514,15 @@ seraph_store_get_embedding_into(store, fid, buf, 1024, &written);
 
 ### `seraph_store_quantize_query`
 
-The query the engine actually walks with: `embedding` after a round trip
-through the store's write quantizer. On a v3 store this is what every scoring
-path sees, so reproduce scores outside the engine from this vector, not the raw
-one. Identity on pre-v3 stores.
+The query vector exactly as the store scores it: the embedding after a round trip through the store's vector precision. Use it to reproduce scores outside the engine.
 
 ```c
 int seraph_store_quantize_query(
-    void* handle, const float* embedding, size_t embedding_len,
-    float** out_query, size_t* out_dim
+    void* handle,
+    const float* embedding,
+    size_t embedding_len,
+    float** out_query,
+    size_t* out_dim
 );
 ```
 
@@ -1222,10 +1531,10 @@ int seraph_store_quantize_query(
 | Name | Type | Required | Description |
 |---|---|---|---|
 | `handle` | `void*` | yes | Store handle. |
-| `embedding` | `const float*` | yes | Query embedding, length `seraph_store_dim`. |
-| `embedding_len` | `size_t` | yes | Vector length. |
-| `out_query` | `float**` | yes | Out: freshly allocated walk query (free with `seraph_floats_free`). |
-| `out_dim` | `size_t*` | yes | Out: its length. |
+| `embedding` | `const float*` | yes | Query vector of the store's dimension. |
+| `embedding_len` | `size_t` | yes | Length of `embedding`. |
+| `out_query` | `float**` | yes | Out: query. |
+| `out_dim` | `size_t*` | yes | Out: dim. |
 
 **Returns:** `0` on success, `-1` on error.
 
@@ -1233,14 +1542,15 @@ int seraph_store_quantize_query(
 
 ### `seraph_store_encode_codes`
 
-The packed 4-bit codes the store would persist for `embedding` — the bytes
-`codes_hex` carries in the frame JSON and `seraph_store_content_set_root`
-hashes — so a caller can build a leaf for content it has not ingested.
+The packed 4-bit codes the store would persist for an embedding: the bytes a frame's codes carry and content_set_root hashes. Lets a caller build a leaf for content it has not ingested.
 
 ```c
 int seraph_store_encode_codes(
-    void* handle, const float* embedding, size_t embedding_len,
-    uint8_t** out_codes, size_t* out_len
+    void* handle,
+    const float* embedding,
+    size_t embedding_len,
+    uint8_t** out_codes,
+    size_t* out_len
 );
 ```
 
@@ -1249,10 +1559,10 @@ int seraph_store_encode_codes(
 | Name | Type | Required | Description |
 |---|---|---|---|
 | `handle` | `void*` | yes | Store handle. |
-| `embedding` | `const float*` | yes | Embedding, length `seraph_store_dim`. |
-| `embedding_len` | `size_t` | yes | Vector length. |
-| `out_codes` | `uint8_t**` | yes | Out: freshly allocated codes (free with `seraph_bytes_free`); `NULL` with `out_len == 0` on a pre-v3 store or a dimension mismatch. |
-| `out_len` | `size_t*` | yes | Out: byte length. |
+| `embedding` | `const float*` | yes | Vector of the store's dimension. |
+| `embedding_len` | `size_t` | yes | Length of `embedding`. |
+| `out_codes` | `uint8_t**` | yes | Out: codes. |
+| `out_len` | `size_t*` | yes | Out: len. |
 
 **Returns:** `0` on success, `-1` on error.
 
@@ -1260,7 +1570,7 @@ int seraph_store_encode_codes(
 
 ### `seraph_store_get_metadata`
 
-Fetch a frame's metadata object as JSON.
+A frame's metadata by ID, as a JSON object string.
 
 ```c
 char* seraph_store_get_metadata(void* handle, const char* frame_id);
@@ -1284,14 +1594,12 @@ char* meta = seraph_store_get_metadata(store, fid);
 if (meta) seraph_string_free(meta);
 ```
 
-### `seraph_store_borrow_frame` / `seraph_store_release_frame`
+### `seraph_store_borrow_frame`
 
-Zero-copy frame view. Pointers in the view borrow engine-owned memory — do not
-mutate the store while the view is held, and do not free individual fields.
+Borrow a frame for zero-copy reads. The view points into engine memory, so release it before the store is written to.
 
 ```c
 SeraphFrameView* seraph_store_borrow_frame(void* handle, const char* frame_id);
-void seraph_store_release_frame(SeraphFrameView* view);
 ```
 
 **Parameters**
@@ -1299,10 +1607,9 @@ void seraph_store_release_frame(SeraphFrameView* view);
 | Name | Type | Required | Description |
 |---|---|---|---|
 | `handle` | `void*` | yes | Store handle. |
-| `frame_id` | `const char*` | yes | Frame ID to borrow. |
-| `view` | `SeraphFrameView*` | yes | (release) View to release. |
+| `frame_id` | `const char*` | yes | Frame ID. |
 
-**Returns:** `seraph_store_borrow_frame` → pointer to a [`SeraphFrameView`](#seraphframeview), or `NULL` if not found. `seraph_store_release_frame` → nothing.
+**Returns:** Pointer to a [`SeraphFrameView`](#seraphframeview), or `NULL` if not found.
 
 **Errors:** `NULL` if the frame is missing or the handle is `NULL`.
 
@@ -1313,9 +1620,25 @@ SeraphFrameView* v = seraph_store_borrow_frame(store, fid);
 if (v) { /* read v->embedding, v->status, ... */ seraph_store_release_frame(v); }
 ```
 
+### `seraph_store_release_frame`
+
+Release a frame view obtained from borrow_frame. Do not free the view's fields individually.
+
+```c
+void seraph_store_release_frame(SeraphFrameView* view);
+```
+
+**Parameters**
+
+| Name | Type | Required | Description |
+|---|---|---|---|
+| `view` | `SeraphFrameView*` | yes | The view to release; NULL is ignored. |
+
+**Returns:** Nothing.
+
 ### `seraph_store_frame_ids`
 
-List all frame IDs in the store.
+All frame IDs in insertion order.
 
 ```c
 char* seraph_store_frame_ids(void* handle);
@@ -1340,7 +1663,7 @@ seraph_string_free(ids);
 
 ### `seraph_store_eigenframe_ids`
 
-List the IDs of all eigenframes.
+IDs of the eigenframes.
 
 ```c
 char* seraph_store_eigenframe_ids(void* handle);
@@ -1365,7 +1688,7 @@ seraph_string_free(ids);
 
 ### `seraph_store_eigenframes`
 
-Fetch full frame objects for all eigenframes.
+Full Frame objects for all eigenframes.
 
 ```c
 char* seraph_store_eigenframes(void* handle);
@@ -1392,8 +1715,7 @@ seraph_string_free(json);
 
 ### `seraph_store_federation_vector`
 
-Mean of all eigenframe embeddings — a single vector representing the store's
-semantic center, used for federation routing (D2 dispatch).
+Mean of all eigenframe embeddings: a single vector representing the store's semantic centre, used for federation routing.
 
 ```c
 int seraph_store_federation_vector(void* handle, float** out_embedding, size_t* out_dim);
@@ -1404,8 +1726,8 @@ int seraph_store_federation_vector(void* handle, float** out_embedding, size_t* 
 | Name | Type | Required | Description |
 |---|---|---|---|
 | `handle` | `void*` | yes | Store handle. |
-| `out_embedding` | `float**` | yes | Out: float array. Free with `seraph_floats_free`. |
-| `out_dim` | `size_t*` | yes | Out: dimensionality. |
+| `out_embedding` | `float**` | yes | Out: embedding. |
+| `out_dim` | `size_t*` | yes | Out: dim. |
 
 **Returns:** `0` on success (including the no-eigenframe case), `-1` on error.
 
@@ -1421,7 +1743,7 @@ if (seraph_store_federation_vector(store, &fv, &dim) == 0 && fv)
 
 ### `seraph_store_model_id`
 
-Return the store's permanent embedding model ID.
+The embedding model ID declared at genesis.
 
 ```c
 char* seraph_store_model_id(void* handle);
@@ -1446,7 +1768,7 @@ seraph_string_free(mid);
 
 ### `seraph_store_dim`
 
-Return the store's embedding dimensionality.
+Embedding dimensionality of the store.
 
 ```c
 size_t seraph_store_dim(void* handle);
@@ -1470,7 +1792,7 @@ size_t dim = seraph_store_dim(store);
 
 ### `seraph_store_stats`
 
-Write store statistics into a caller-supplied struct.
+Store statistics.
 
 ```c
 int seraph_store_stats(void* handle, SeraphStats* out);
@@ -1481,7 +1803,7 @@ int seraph_store_stats(void* handle, SeraphStats* out);
 | Name | Type | Required | Description |
 |---|---|---|---|
 | `handle` | `void*` | yes | Store handle. |
-| `out` | `SeraphStats*` | yes | Out: caller-owned [`SeraphStats`](#seraphstats) struct. |
+| `out` | `SeraphStats*` | yes | Out: struct filled on success. |
 
 **Returns:** `0` on success, negative on error.
 
@@ -1501,13 +1823,14 @@ if (seraph_store_stats(store, &s) == 0)
 
 ### `seraph_store_add_seed`
 
-Add a domain-attractor seed frame (always an eigenframe).
+Add a seed frame to a live store (immediately an eigenframe).
 
 ```c
 char* seraph_store_add_seed(
     void* handle,
     const char* label,
-    const float* embedding, size_t embedding_len,
+    const float* embedding,
+    size_t embedding_len,
     const char* metadata_json
 );
 ```
@@ -1519,8 +1842,8 @@ char* seraph_store_add_seed(
 | `handle` | `void*` | yes | Store handle. |
 | `label` | `const char*` | yes | Human-readable seed label. |
 | `embedding` | `const float*` | yes | Seed embedding vector. |
-| `embedding_len` | `size_t` | yes | Vector length; must equal the store dimension. |
-| `metadata_json` | `const char*` | no | JSON metadata object, or `NULL`. |
+| `embedding_len` | `size_t` | yes | Length of `embedding`. |
+| `metadata_json` | `const char*` | yes | JSON metadata object. |
 
 **Returns:** Seed frame ID (free with `seraph_string_free`), or `NULL` on error.
 
@@ -1535,14 +1858,7 @@ seraph_string_free(sid);
 
 ### `seraph_store_get_seeds`
 
-The authored seed list — an append-only registry of `label -> frame_id`
-bindings held in a `_seraph_seeds:` System sentinel.
-
-A binding may name **any** frame, not only a Seed-status one, which is how an
-eigenframe the geometry grew gets a stable name. When no registry has ever been
-authored the list is derived from the store's Seed-status frames instead, so a
-store predating the registry still answers; use
-`seraph_store_seeds_are_authored` to tell the two apart.
+The authored seed list: `label -> frame_id` bindings in authored order. A binding may name any frame, not only a Seed. When no list has been authored, the store's Seed frames are returned instead; `seeds_are_authored()` tells the two apart.
 
 ```c
 char* seraph_store_get_seeds(void* handle);
@@ -1568,9 +1884,7 @@ seraph_string_free(json);
 
 ### `seraph_store_seeds_are_authored`
 
-Whether the seed list comes from a registry sentinel rather than being derived
-from Seed-status frames. An authored **empty** registry is a real state and is
-authoritative — it does not fall back to the derived list.
+Whether the seed list comes from an authored registry rather than being derived from Seed-status frames. An authored empty registry is a real state and is authoritative; it does not fall back to the derived list.
 
 ```c
 int seraph_store_seeds_are_authored(void* handle);
@@ -1584,9 +1898,11 @@ int seraph_store_seeds_are_authored(void* handle);
 
 **Returns:** `1` if authored, `0` if derived, `-1` on error.
 
+**Errors:** `-1` if the handle is `NULL`.
+
 ### `seraph_store_resolve_seed`
 
-Resolve a seed label to its frame id. Labels are unique within a registry.
+Resolve a seed label to its frame ID. Labels are unique within a store's seed registry.
 
 ```c
 char* seraph_store_resolve_seed(void* handle, const char* label);
@@ -1597,7 +1913,7 @@ char* seraph_store_resolve_seed(void* handle, const char* label);
 | Name | Type | Required | Description |
 |---|---|---|---|
 | `handle` | `void*` | yes | Store handle. |
-| `label` | `const char*` | yes | Seed label to resolve. |
+| `label` | `const char*` | yes | Registered seed label. |
 
 **Returns:** Frame ID (free with `seraph_string_free`), or `NULL` if the label
 is not registered, or `NULL` on error.
@@ -1608,13 +1924,7 @@ still `NULL`. Check the error slot to tell "not found" from "failed".
 
 ### `seraph_store_set_seeds`
 
-Replace the whole registry, appending a new snapshot sentinel. The full list is
-rewritten on every mutation rather than journalled as a delta, so a reader
-resolves the registry with one read of the last snapshot instead of folding the
-store's history.
-
-Removing a label removes it from the authored set **only** — it does not demote
-the frame, which keeps whatever status and geometric pull it already had.
+Replace the authored seed list. Removing a label removes it from the list only; the frame keeps its status.
 
 ```c
 char* seraph_store_set_seeds(void* handle, const char* entries_json);
@@ -1625,7 +1935,7 @@ char* seraph_store_set_seeds(void* handle, const char* entries_json);
 | Name | Type | Required | Description |
 |---|---|---|---|
 | `handle` | `void*` | yes | Store handle. |
-| `entries_json` | `const char*` | yes | JSON array of `{"label","frame_id"}`. |
+| `entries_json` | `const char*` | yes | The complete new registry. |
 
 **Returns:** The snapshot sentinel's frame ID (free with `seraph_string_free`),
 or `NULL` on error.
@@ -1643,15 +1953,10 @@ seraph_string_free(sid);
 
 ### `seraph_store_register_seed`
 
-Bind one label, appending a new snapshot. Rebinding an existing label updates it
-in place, preserving its authored position.
+Bind a label to a frame in the seed registry, appending a new registry snapshot. Rebinding an existing label updates it in place and keeps its position.
 
 ```c
-char* seraph_store_register_seed(
-    void* handle,
-    const char* label,
-    const char* frame_id
-);
+char* seraph_store_register_seed(void* handle, const char* label, const char* frame_id);
 ```
 
 **Parameters**
@@ -1659,8 +1964,8 @@ char* seraph_store_register_seed(
 | Name | Type | Required | Description |
 |---|---|---|---|
 | `handle` | `void*` | yes | Store handle. |
-| `label` | `const char*` | yes | Label to bind. |
-| `frame_id` | `const char*` | yes | Frame to bind it to; must exist in the store. |
+| `label` | `const char*` | yes | Seed label; unique within the registry. |
+| `frame_id` | `const char*` | yes | Frame the label names. |
 
 **Returns:** The snapshot sentinel's frame ID (free with `seraph_string_free`),
 or `NULL` on error.
@@ -1670,8 +1975,7 @@ a `NULL` handle.
 
 ### `seraph_store_unregister_seed`
 
-Drop a label from the authored set, appending a new snapshot. The frame it named
-is untouched.
+Drop a label from the seed registry, appending a new registry snapshot. The frame it named is untouched.
 
 ```c
 char* seraph_store_unregister_seed(void* handle, const char* label);
@@ -1682,7 +1986,7 @@ char* seraph_store_unregister_seed(void* handle, const char* label);
 | Name | Type | Required | Description |
 |---|---|---|---|
 | `handle` | `void*` | yes | Store handle. |
-| `label` | `const char*` | yes | Label to drop. |
+| `label` | `const char*` | yes | Registered seed label. |
 
 **Returns:** The snapshot sentinel's frame ID (free with `seraph_string_free`),
 or `NULL` on error.
@@ -1692,25 +1996,16 @@ or `NULL` on error.
 
 ### `seraph_store_put_subtree`
 
-Ingest content into a named subtree: the parent is chosen from inside `root`'s
-parent-edge subtree instead of from the store at large.
-
-The region is asserted by the caller; the position inside it is still derived by
-the geometry, so lineage stays graded and depth stays real. There is no
-similarity floor — a placement is asserted, so no score refuses it.
-
-Similarity edges are chosen **globally**, exactly as `seraph_store_put` chooses
-them. Only the parent edge is overridden, so a placed frame remains reachable by
-ordinary search. The frame is stamped with `_placed_under` so a later
-`seraph_migrate_store` re-derives its position inside the same region rather
-than re-routing it.
+Ingest content under a named subtree: the parent is chosen from inside `root`'s subtree instead of the whole store, with no similarity floor. Similarity edges are chosen globally as `put` chooses them, so the frame stays reachable by ordinary search. The placement is recorded on the frame so a migration keeps it inside the same region.
 
 ```c
 char* seraph_store_put_subtree(
     void* handle,
     const char* root,
-    const uint8_t* content, size_t content_len,
-    const float* embedding, size_t embedding_len,
+    const uint8_t* content,
+    size_t content_len,
+    const float* embedding,
+    size_t embedding_len,
     const char* metadata_json
 );
 ```
@@ -1722,10 +2017,10 @@ char* seraph_store_put_subtree(
 | `handle` | `void*` | yes | Store handle. |
 | `root` | `const char*` | yes | Subtree root: a frame ID or a seed label. A frame ID wins if it resolves as one. |
 | `content` | `const uint8_t*` | yes | Content bytes. |
-| `content_len` | `size_t` | yes | Content length. |
+| `content_len` | `size_t` | yes | Length of `content`. |
 | `embedding` | `const float*` | yes | Embedding vector. |
-| `embedding_len` | `size_t` | yes | Vector length; must equal the store dimension. |
-| `metadata_json` | `const char*` | no | JSON metadata object, or `NULL`. A caller-supplied `_placed_under` is overwritten. |
+| `embedding_len` | `size_t` | yes | Length of `embedding`. |
+| `metadata_json` | `const char*` | yes | JSON metadata object. A caller-supplied `_placed_under` is overwritten. |
 
 **Returns:** New frame ID (free with `seraph_string_free`), or `NULL` on error.
 
@@ -1742,17 +2037,14 @@ seraph_string_free(fid);
 
 ### `seraph_store_search_subtree`
 
-Search confined to a named subtree. Phase 1 is skipped entirely — the root is
-the entry point — and the traversal follows parent edges plus only those
-similarity edges whose target is inside the subtree.
-
-Ordinary `seraph_store_search` is unaffected and still reaches these frames.
+Search confined to a named subtree: the root is the entry point and only edges inside the subtree are followed. Ordinary `search` is unaffected and still reaches these frames.
 
 ```c
 int seraph_store_search_subtree(
     void* handle,
     const char* root,
-    const float* query, size_t query_len,
+    const float* query,
+    size_t query_len,
     size_t top_k,
     float tau,
     SeraphHit** out_hits,
@@ -1767,23 +2059,19 @@ int seraph_store_search_subtree(
 | `handle` | `void*` | yes | Store handle. |
 | `root` | `const char*` | yes | Subtree root: a frame ID or a seed label. |
 | `query` | `const float*` | yes | Query embedding. |
-| `query_len` | `size_t` | yes | Vector length. |
-| `top_k` | `size_t` | yes | Maximum results. |
-| `tau` | `float` | yes | Similarity threshold; pass a negative value to use the store's configured `tau_similarity`. |
-| `out_hits` | `SeraphHit**` | yes | Receives the hit array (free with `seraph_hits_free`). |
-| `out_count` | `size_t*` | yes | Receives the hit count. |
+| `query_len` | `size_t` | yes | Length of `query`. |
+| `top_k` | `size_t` | yes | Maximum number of hits. |
+| `tau` | `float` | yes | Similarity floor (cosine); `0.0` disables it. |
+| `out_hits` | `SeraphHit**` | yes | Out: hits. Free with `seraph_hits_free`. |
+| `out_count` | `size_t*` | yes | Out: count. |
 
 **Returns:** `0` on success, `-1` on error.
 
 **Errors:** `-1` on an unknown root or a `NULL` handle.
 
-**Note:** Depth is bounded by `search_max_depth`; the subtree itself bounds the
-visit count.
-
 ### `seraph_store_promote`
 
-Promote an existing frame to eigenframe. Promotion is monotonic — eigenframes
-are never demoted.
+Promote an active frame to eigenframe unconditionally. Promotion is monotonic.
 
 ```c
 int seraph_store_promote(void* handle, const char* frame_id);
@@ -1808,13 +2096,15 @@ seraph_store_promote(store, fid);
 
 ### `seraph_store_promote_content`
 
-Ingest new content and promote it to eigenframe in one step.
+Ingest content and immediately promote it to eigenframe (atomic ingest plus promote).
 
 ```c
 char* seraph_store_promote_content(
     void* handle,
-    const uint8_t* content, size_t content_len,
-    const float* embedding, size_t embedding_len,
+    const uint8_t* content,
+    size_t content_len,
+    const float* embedding,
+    size_t embedding_len,
     const char* metadata_json
 );
 ```
@@ -1827,8 +2117,8 @@ char* seraph_store_promote_content(
 | `content` | `const uint8_t*` | yes | Content bytes. |
 | `content_len` | `size_t` | yes | Length of `content`. |
 | `embedding` | `const float*` | yes | Embedding vector. |
-| `embedding_len` | `size_t` | yes | Vector length; must equal the store dimension. |
-| `metadata_json` | `const char*` | no | JSON metadata object, or `NULL`. |
+| `embedding_len` | `size_t` | yes | Length of `embedding`. |
+| `metadata_json` | `const char*` | yes | JSON metadata object. |
 
 **Returns:** New eigenframe ID (free with `seraph_string_free`), or `NULL` on error.
 
@@ -1847,7 +2137,7 @@ seraph_string_free(fid);
 
 ### `seraph_store_path`
 
-BFS path between two frames.
+Shortest path between two frames over parent-child links.
 
 ```c
 char* seraph_store_path(void* handle, const char* from_id, const char* to_id);
@@ -1861,7 +2151,7 @@ char* seraph_store_path(void* handle, const char* from_id, const char* to_id);
 | `from_id` | `const char*` | yes | Start frame ID. |
 | `to_id` | `const char*` | yes | End frame ID. |
 
-**Returns:** JSON array of frame objects along the BFS path (free with `seraph_string_free`), or `NULL` on error.
+**Returns:** JSON array of frame objects along the path (free with `seraph_string_free`), or `NULL` on error.
 
 **Errors:** `NULL` if either frame is missing or no path exists.
 
@@ -1876,7 +2166,7 @@ seraph_string_free(json);
 
 ### `seraph_store_chain`
 
-Semantic chain between two frames, with distance and coherence metrics.
+The shortest route between two frames over committed edges (similarity edges and parent/child links), each step weighted by how similar its two frames are. Exact; bounded by `search_max_visits`. For a frame's own ancestry use `lineage`.
 
 ```c
 char* seraph_store_chain(void* handle, const char* from_id, const char* to_id);
@@ -1894,7 +2184,7 @@ char* seraph_store_chain(void* handle, const char* from_id, const char* to_id);
 
 **Errors:** `NULL` if either frame is missing.
 
-**Response:** [PLACEHOLDER: chain JSON shape — frames, distance, coherence]
+**Response:** the chain JSON shape documented under `seraph_store_chain_between`; `primitive` is `"geodesic"`.
 
 **Example**
 
@@ -1903,9 +2193,303 @@ char* json = seraph_store_chain(store, a, b);
 seraph_string_free(json);
 ```
 
+### `seraph_store_chain_opts`
+
+chain with the include_superseded option: superseded frames may be steps of the route, as they may be results of search_opts.
+
+```c
+char* seraph_store_chain_opts(
+    void* handle,
+    const char* from_id,
+    const char* to_id,
+    bool include_superseded
+);
+```
+
+**Parameters**
+
+| Name | Type | Required | Description |
+|---|---|---|---|
+| `handle` | `void*` | yes | Store handle. |
+| `from_id` | `const char*` | yes | Start frame ID. |
+| `to_id` | `const char*` | yes | End frame ID. |
+| `include_superseded` | `bool` | yes | `true` opts soft-forgotten frames back into results. |
+
+**Returns:** JSON chain result (free with `seraph_string_free`), or `NULL` on error.
+
+**Errors:** `NULL` on a null handle or id.
+
+**Response:** the chain JSON shape documented under `seraph_store_chain_between`; `primitive` is `"geodesic"`.
+
+**Example**
+
+```c
+char* json = seraph_store_chain_opts(store, a, b, true);
+seraph_string_free(json);
+```
+
+### `seraph_store_chain_forward`
+
+How `from_id` led to `to_id`: the shortest route over committed edges taking only steps forward in commit order, so each step is to a frame that attached to the one before it when it was committed. `from_id` must precede `to_id`; `reached` is `False` when no such route exists. Crosses lineages, which `lineage` cannot.
+
+```c
+char* seraph_store_chain_forward(
+    void* handle,
+    const char* from_id,
+    const char* to_id,
+    bool include_superseded
+);
+```
+
+**Parameters**
+
+| Name | Type | Required | Description |
+|---|---|---|---|
+| `handle` | `void*` | yes | Store handle. |
+| `from_id` | `const char*` | yes | Earlier frame ID. |
+| `to_id` | `const char*` | yes | Later frame ID. |
+| `include_superseded` | `bool` | yes | `true` opts soft-forgotten frames back into results. |
+
+**Returns:** JSON chain result (free with `seraph_string_free`), or `NULL` on error.
+
+**Errors:** `NULL` on a null handle or id.
+
+**Response:** the chain JSON shape documented under `seraph_store_chain_between`; `primitive` is `"geodesic_forward"`. `reached` is false when the record holds no forward route, or `from_id` does not precede `to_id`.
+
+**Example**
+
+```c
+char* json = seraph_store_chain_forward(store, earlier, later, false);
+seraph_string_free(json);
+```
+
+### `seraph_store_chain_forward_between`
+
+How the idea at `emb_a` led to the idea at `emb_b`. Each query's `search` results (under `top_k` and `tau`) stand for it; the best-fitting earlier/later pair that a forward route joins is chosen, and the route is the forward chain between them. `reached` is `False` when no forward route joins the two result sets.
+
+```c
+char* seraph_store_chain_forward_between(
+    void* handle,
+    const float* emb_a,
+    size_t len_a,
+    const float* emb_b,
+    size_t len_b,
+    size_t top_k,
+    float tau,
+    bool include_superseded
+);
+```
+
+**Parameters**
+
+| Name | Type | Required | Description |
+|---|---|---|---|
+| `handle` | `void*` | yes | Store handle. |
+| `emb_a` | `const float*` | yes | The earlier idea. |
+| `len_a` | `size_t` | yes | Length of `a`. |
+| `emb_b` | `const float*` | yes | The later idea. |
+| `len_b` | `size_t` | yes | Length of `b`. |
+| `top_k` | `size_t` | yes | Maximum number of hits. |
+| `tau` | `float` | yes | Similarity floor (cosine); `0.0` disables it. |
+| `include_superseded` | `bool` | yes | `true` opts soft-forgotten frames back into results. |
+
+**Returns:** JSON chain result (free with `seraph_string_free`), or `NULL` on error.
+
+**Errors:** `NULL` on a null handle.
+
+**Response:** the chain JSON shape documented under `seraph_store_chain_between`; `primitive` is `"geodesic_forward"`. `reached` is false when no forward route joins the two result sets.
+
+**Example**
+
+```c
+char* json = seraph_store_chain_forward_between(store, a, 384, b, 384, 10, 0.5f, false);
+seraph_string_free(json);
+```
+
+### `seraph_store_provenance`
+
+What `frame_id` was built on: a route back in commit order through the frames it attached to when it was committed (its parent and the similarity neighbours it chose), stopping when the next step is no more related than the store's background. `tau` overrides that stop; `reached` is `True` when at least one step was taken.
+
+```c
+char* seraph_store_provenance(
+    void* handle,
+    const char* frame_id,
+    float tau,
+    bool include_superseded
+);
+```
+
+**Parameters**
+
+| Name | Type | Required | Description |
+|---|---|---|---|
+| `handle` | `void*` | yes | Store handle. |
+| `frame_id` | `const char*` | yes | Start frame. |
+| `tau` | `float` | yes | Similarity floor (cosine); `0.0` disables it. |
+| `include_superseded` | `bool` | yes | `true` opts soft-forgotten frames back into results. |
+
+**Returns:** Chain JSON, start frame first (free with `seraph_string_free`), or `NULL` on error.
+
+**Errors:** `NULL` on a null handle or id.
+
+**Response:** the chain JSON shape documented under `seraph_store_chain_between`.
+
+**Example**
+
+```c
+char* json = seraph_store_provenance(store, id, NAN, false);
+seraph_string_free(json);
+```
+
+### `seraph_store_influence`
+
+What was built on `frame_id`: a route forward in commit order through the frames that attached to it when they were committed, stopping when the next step is no more related than the store's background. `tau` overrides that stop; `reached` is `True` when at least one step was taken.
+
+```c
+char* seraph_store_influence(
+    void* handle,
+    const char* frame_id,
+    float tau,
+    bool include_superseded
+);
+```
+
+**Parameters**
+
+| Name | Type | Required | Description |
+|---|---|---|---|
+| `handle` | `void*` | yes | Store handle. |
+| `frame_id` | `const char*` | yes | Start frame. |
+| `tau` | `float` | yes | Similarity floor (cosine); `0.0` disables it. |
+| `include_superseded` | `bool` | yes | `true` opts soft-forgotten frames back into results. |
+
+**Returns:** Chain JSON, start frame first (free with `seraph_string_free`), or `NULL` on error.
+
+**Errors:** `NULL` on a null handle or id.
+
+**Response:** the chain JSON shape documented under `seraph_store_chain_between`.
+
+**Example**
+
+```c
+char* json = seraph_store_influence(store, id, NAN, false);
+seraph_string_free(json);
+```
+
+### `seraph_store_provenance_with_warp_spec`
+
+`provenance` steered by a warp: steps are chosen, and the stop measured, against the start frame pulled toward `targets` and away from `suppress`, so the warp selects which strand is followed.
+
+```c
+char* seraph_store_provenance_with_warp_spec(
+    void* handle,
+    const char* frame_id,
+    const char* warp_spec_json,
+    float tau,
+    bool include_superseded
+);
+```
+
+**Parameters**
+
+| Name | Type | Required | Description |
+|---|---|---|---|
+| `handle` | `void*` | yes | Store handle. |
+| `frame_id` | `const char*` | yes | Start frame. |
+| `warp_spec_json` | `const char*` | yes | WarpSpec JSON in the `seraph_store_search_with_warp_spec` format. |
+| `tau` | `float` | yes | Similarity floor (cosine); `0.0` disables it. |
+| `include_superseded` | `bool` | yes | `true` opts soft-forgotten frames back into results. |
+
+**Returns:** Chain JSON, start frame first (free with `seraph_string_free`), or `NULL` on error.
+
+**Errors:** `NULL` on a null handle or id, or a malformed / unresolvable warp spec.
+
+**Response:** the chain JSON shape documented under `seraph_store_chain_between`.
+
+**Example**
+
+```c
+char* json = seraph_store_provenance_with_warp_spec(store, id, spec, NAN, false);
+seraph_string_free(json);
+```
+
+### `seraph_store_influence_with_warp_spec`
+
+`influence` steered by a warp: steps are chosen, and the stop measured, against the start frame pulled toward `targets` and away from `suppress`, so the warp selects which strand is followed.
+
+```c
+char* seraph_store_influence_with_warp_spec(
+    void* handle,
+    const char* frame_id,
+    const char* warp_spec_json,
+    float tau,
+    bool include_superseded
+);
+```
+
+**Parameters**
+
+| Name | Type | Required | Description |
+|---|---|---|---|
+| `handle` | `void*` | yes | Store handle. |
+| `frame_id` | `const char*` | yes | Start frame. |
+| `warp_spec_json` | `const char*` | yes | WarpSpec JSON in the `seraph_store_search_with_warp_spec` format. |
+| `tau` | `float` | yes | Similarity floor (cosine); `0.0` disables it. |
+| `include_superseded` | `bool` | yes | `true` opts soft-forgotten frames back into results. |
+
+**Returns:** Chain JSON, start frame first (free with `seraph_string_free`), or `NULL` on error.
+
+**Errors:** `NULL` on a null handle or id, or a malformed / unresolvable warp spec.
+
+**Response:** the chain JSON shape documented under `seraph_store_chain_between`.
+
+**Example**
+
+```c
+char* json = seraph_store_influence_with_warp_spec(store, id, spec, NAN, false);
+seraph_string_free(json);
+```
+
+### `seraph_store_connections`
+
+The distinct ways two frames connect: up to `max_routes` routes over committed edges that share no interior frames, shortest first, each with its bridge frame (the interior frame closest to both ends). With `forward` set, every route runs forward in commit order: the ways `from_id` led to `to_id`.
+
+```c
+char* seraph_store_connections(
+    void* handle,
+    const char* from_id,
+    const char* to_id,
+    size_t max_routes,
+    bool forward,
+    bool include_superseded
+);
+```
+
+**Parameters**
+
+| Name | Type | Required | Description |
+|---|---|---|---|
+| `handle` | `void*` | yes | Store handle. |
+| `from_id` | `const char*` | yes | Start frame. |
+| `to_id` | `const char*` | yes | End frame. |
+| `max_routes` | `size_t` | yes | Most routes returned. |
+| `forward` | `bool` | yes | Routes forward in commit order only (`from_id` must precede `to_id`). |
+| `include_superseded` | `bool` | yes | `true` opts soft-forgotten frames back into results. |
+
+**Returns:** JSON `[{"chain": <chain JSON>, "bridge": id|null}]` (free with `seraph_string_free`), or `NULL` on error.
+
+**Errors:** `NULL` on a null handle or id.
+
+**Example**
+
+```c
+char* json = seraph_store_connections(store, a, b, 5, false, false);
+seraph_string_free(json);
+```
+
 ### `seraph_store_chain_to`
 
-Chain from the store toward a query embedding.
+Chain from the frame nearest a query embedding.
 
 ```c
 char* seraph_store_chain_to(void* handle, const float* query_embedding, size_t query_len);
@@ -1917,7 +2501,7 @@ char* seraph_store_chain_to(void* handle, const float* query_embedding, size_t q
 |---|---|---|---|
 | `handle` | `void*` | yes | Store handle. |
 | `query_embedding` | `const float*` | yes | Target query vector. |
-| `query_len` | `size_t` | yes | Vector length. |
+| `query_len` | `size_t` | yes | Length of `query`. |
 
 **Returns:** JSON chain result (free with `seraph_string_free`), or `NULL` on error.
 
@@ -1932,15 +2516,107 @@ char* json = seraph_store_chain_to(store, q, dim);
 seraph_string_free(json);
 ```
 
-### `seraph_store_chain_between`
+### `seraph_store_history`
 
-Chain between two arbitrary embeddings.
+How the store came to hold what the query finds. The top `anchors` search hits choose their lineages, and the best `top_k` frames along those lineages come back oldest first, each with the route that reached it. On a store ingested in time order the result reads as the development of a topic.
 
 ```c
-char* seraph_store_chain_between(
+char* seraph_store_history(
     void* handle,
-    const float* emb_a, size_t len_a,
-    const float* emb_b, size_t len_b
+    const float* query_embedding,
+    size_t query_len,
+    size_t top_k,
+    float tau,
+    size_t anchors
+);
+```
+
+**Parameters**
+
+| Name | Type | Required | Description |
+|---|---|---|---|
+| `handle` | `void*` | yes | Store handle. |
+| `query_embedding` | `const float*` | yes | Query vector. |
+| `query_len` | `size_t` | yes | Length of `query`. |
+| `top_k` | `size_t` | yes | Maximum number of hits. |
+| `tau` | `float` | yes | Similarity floor (cosine); `0.0` disables it. |
+| `anchors` | `size_t` | yes | Search hits used to choose the lineages. |
+
+**Returns:** JSON `{"hits": [{"frame_id", "score", "timestamp", "depth", "path"}], "anchors", "doors", "visits"}`;
+free with `seraph_string_free`. NULL on error.
+
+**Errors:** `NULL` on a `NULL` handle or a failed operation; `seraph_last_error` has the message.
+
+### `seraph_store_history_with_warp_spec`
+
+`history` from a warped query. The warp moves which lineages the anchors fall in, so it chooses which strand of a topic's history is read: toward a finding, away from a thread. Pass a frame's embedding as a target to steer toward that frame.
+
+```c
+char* seraph_store_history_with_warp_spec(
+    void* handle,
+    const float* query_embedding,
+    size_t query_len,
+    const char* warp_spec_json,
+    size_t top_k,
+    float tau,
+    size_t anchors
+);
+```
+
+**Parameters**
+
+| Name | Type | Required | Description |
+|---|---|---|---|
+| `handle` | `void*` | yes | Store handle. |
+| `query_embedding` | `const float*` | yes | Query vector. |
+| `query_len` | `size_t` | yes | Length of `query`. |
+| `warp_spec_json` | `const char*` | yes | WarpSpec JSON in the `seraph_store_search_with_warp_spec` format. |
+| `top_k` | `size_t` | yes | Maximum number of hits. |
+| `tau` | `float` | yes | Similarity floor (cosine); `0.0` disables it. |
+| `anchors` | `size_t` | yes | Search hits used to choose the lineages. |
+
+**Returns:** the same JSON as `seraph_store_history`; free with `seraph_string_free`. NULL on error.
+
+**Errors:** `NULL` on a `NULL` handle or a failed operation; `seraph_last_error` has the message.
+
+### `seraph_store_chain_to_with_warp_spec`
+
+`chain_to` with a warp applied to the query before the route is found.
+
+```c
+char* seraph_store_chain_to_with_warp_spec(
+    void* handle,
+    const float* query_embedding,
+    size_t query_len,
+    const char* warp_spec_json
+);
+```
+
+**Parameters**
+
+| Name | Type | Required | Description |
+|---|---|---|---|
+| `handle` | `void*` | yes | Store handle. |
+| `query_embedding` | `const float*` | yes | Target query vector. |
+| `query_len` | `size_t` | yes | Length of `query`. |
+| `warp_spec_json` | `const char*` | yes | WarpSpec JSON in the `seraph_store_search_with_warp_spec` format. |
+
+**Returns:** JSON chain result (free with `seraph_string_free`), or `NULL` on error.
+
+**Errors:** `NULL` on a `NULL` handle or a failed operation; `seraph_last_error` has the message.
+
+### `seraph_store_chain_between_with_warp_spec`
+
+`chain_between` with a warp applied to both endpoints before the route is found.
+
+```c
+char* seraph_store_chain_between_with_warp_spec(
+    void* handle,
+    const float* emb_a,
+    size_t len_a,
+    const float* emb_b,
+    size_t len_b,
+    const char* warp_spec_json
 );
 ```
 
@@ -1950,15 +2626,44 @@ char* seraph_store_chain_between(
 |---|---|---|---|
 | `handle` | `void*` | yes | Store handle. |
 | `emb_a` | `const float*` | yes | First embedding. |
-| `len_a` | `size_t` | yes | Length of `emb_a`. |
+| `len_a` | `size_t` | yes | Length of `a`. |
 | `emb_b` | `const float*` | yes | Second embedding. |
-| `len_b` | `size_t` | yes | Length of `emb_b`. |
+| `len_b` | `size_t` | yes | Length of `b`. |
+| `warp_spec_json` | `const char*` | yes | WarpSpec JSON in the `seraph_store_search_with_warp_spec` format. |
+
+**Returns:** JSON chain result (free with `seraph_string_free`), or `NULL` on error.
+
+**Errors:** `NULL` on a `NULL` handle or a failed operation; `seraph_last_error` has the message.
+
+### `seraph_store_chain_between`
+
+Chain between two points in embedding space: the route between the frames nearest each embedding.
+
+```c
+char* seraph_store_chain_between(
+    void* handle,
+    const float* emb_a,
+    size_t len_a,
+    const float* emb_b,
+    size_t len_b
+);
+```
+
+**Parameters**
+
+| Name | Type | Required | Description |
+|---|---|---|---|
+| `handle` | `void*` | yes | Store handle. |
+| `emb_a` | `const float*` | yes | First embedding. |
+| `len_a` | `size_t` | yes | Length of `a`. |
+| `emb_b` | `const float*` | yes | Second embedding. |
+| `len_b` | `size_t` | yes | Length of `b`. |
 
 **Returns:** JSON chain result (free with `seraph_string_free`), or `NULL` on error.
 
 **Errors:** `NULL` on dimension mismatch or `NULL` handle.
 
-**Response:** [PLACEHOLDER: chain JSON shape]
+**Response:** `{"frame_ids": [...], "primitive": "geodesic", "reached": bool, "coherence": {"mean_gradient", "min_gradient", "fragmentation_events", "pass_strict", "pass_loose", "stretch"}}`. The route is the geodesic over committed edges (similarity edges and parent/child links, each step costing its arc); `stretch` is its arc over the direct arc between its ends. `reached` is false when the search exhausted `search_max_visits` before the target: `frame_ids` then ends at the frame it reached nearest the target and both coherence passes are false.
 
 **Example**
 
@@ -1969,7 +2674,7 @@ seraph_string_free(json);
 
 ### `seraph_store_lineage`
 
-Ancestor chain (parent links) for a frame.
+Parent chain back to genesis: [frame, parent, ..., GENESIS].
 
 ```c
 char* seraph_store_lineage(void* handle, const char* frame_id);
@@ -1997,7 +2702,7 @@ seraph_string_free(json);
 
 ### `seraph_store_subtree`
 
-Descendants of a frame up to `max_depth`.
+All descendant frames under `frame_id`, optionally bounded by `max_depth`.
 
 ```c
 char* seraph_store_subtree(void* handle, const char* frame_id, size_t max_depth);
@@ -2009,7 +2714,7 @@ char* seraph_store_subtree(void* handle, const char* frame_id, size_t max_depth)
 |---|---|---|---|
 | `handle` | `void*` | yes | Store handle. |
 | `frame_id` | `const char*` | yes | Root frame ID. |
-| `max_depth` | `size_t` | yes | Maximum descent depth. |
+| `max_depth` | `size_t` | yes | Maximum descent depth; `0` = unbounded. |
 
 **Returns:** JSON subtree structure (free with `seraph_string_free`), or `NULL` on error.
 
@@ -2024,9 +2729,28 @@ char* json = seraph_store_subtree(store, fid, 3);
 seraph_string_free(json);
 ```
 
+### `seraph_store_subtrees`
+
+Enumerate seed-rooted subtrees with at least `min_size` descendants.
+
+```c
+char* seraph_store_subtrees(void* handle, size_t min_size);
+```
+
+**Parameters**
+
+| Name | Type | Required | Description |
+|---|---|---|---|
+| `handle` | `void*` | yes | Store handle. |
+| `min_size` | `size_t` | yes | Minimum descendant count. |
+
+**Returns:** JSON array of `{"root", "root_status", "descendant_count", "eigenframe_count", "max_depth"}` (free with `seraph_string_free`), or `NULL` on error.
+
+**Errors:** `NULL` on a `NULL` handle or a failed operation; `seraph_last_error` has the message.
+
 ### `seraph_store_get_children`
 
-Direct children of a frame.
+Child frame IDs of a frame.
 
 ```c
 char* seraph_store_get_children(void* handle, const char* frame_id);
@@ -2058,7 +2782,7 @@ seraph_string_free(json);
 
 ### `seraph_store_neighborhood`
 
-Local region around a frame: nearby frames, edges, and the region eigenframe.
+Three-population neighborhood of a frame: its consensus, geometric and lineage neighbours.
 
 ```c
 char* seraph_store_neighborhood(void* handle, const char* frame_id, float tau, size_t hops);
@@ -2070,7 +2794,7 @@ char* seraph_store_neighborhood(void* handle, const char* frame_id, float tau, s
 |---|---|---|---|
 | `handle` | `void*` | yes | Store handle. |
 | `frame_id` | `const char*` | yes | Center frame ID. |
-| `tau` | `float` | yes | Similarity threshold for included edges. |
+| `tau` | `float` | yes | Similarity floor (cosine); `0.0` disables it. |
 | `hops` | `size_t` | yes | Traversal radius in hops. |
 
 **Returns:** JSON with frames, edges, and region eigenframe (free with `seraph_string_free`), or `NULL` on error.
@@ -2088,15 +2812,16 @@ seraph_string_free(json);
 
 ### `seraph_store_neighborhood_spec`
 
-Same as [`seraph_store_neighborhood`](#seraph_store_neighborhood), but tau is
-given as a spec instead of a raw float. `tau_mode` / `tau_value` follow the
-enum documented on
-[`seraph_store_resolve_tau_spec`](#seraph_store_resolve_tau_spec):
-`0` = auto (background p95), `1` = loose (p75), `2` = strict (p99),
-`3` = explicit `tau_value`.
+The three-population neighborhood of a frame, with tau given as a spec: auto (p95), loose (p75), strict (p99) or an explicit value.
 
 ```c
-char* seraph_store_neighborhood_spec(void* handle, const char* frame_id, int tau_mode, float tau_value, size_t hops);
+char* seraph_store_neighborhood_spec(
+    void* handle,
+    const char* frame_id,
+    int tau_mode,
+    float tau_value,
+    size_t hops
+);
 ```
 
 **Parameters**
@@ -2105,8 +2830,8 @@ char* seraph_store_neighborhood_spec(void* handle, const char* frame_id, int tau
 |---|---|---|---|
 | `handle` | `void*` | yes | Store handle. |
 | `frame_id` | `const char*` | yes | Center frame ID. |
-| `tau_mode` | `int` | yes | Tau spec mode: `0` auto, `1` loose, `2` strict, `3` explicit. |
-| `tau_value` | `float` | yes | Explicit tau for mode `3`; ignored otherwise. |
+| `tau_mode` | `int` | yes | Tau spec mode: `0` auto (background p95), `1` loose (p75), `2` strict (p99), `3` explicit `tau_value`. |
+| `tau_value` | `float` | yes | Explicit tau, used when `tau_mode` is `3`. |
 | `hops` | `size_t` | yes | Traversal radius in hops. |
 
 **Returns:** Same JSON shape as `seraph_store_neighborhood` (free with `seraph_string_free`), or `NULL` on error.
@@ -2129,14 +2854,42 @@ seraph_string_free(json);
 > the higher-level wrappers. Target pull is always uncapped; only `"bounded"`
 > caps suppression norm (at `bound_k`). Magnitude is the caller's throttle.
 
+### `seraph_store_neighborhood_with_warp_spec`
+
+`neighborhood` with a warp field applied.
+
+```c
+char* seraph_store_neighborhood_with_warp_spec(
+    void* handle,
+    const char* frame_id,
+    const char* warp_spec_json,
+    float tau,
+    size_t hops
+);
+```
+
+**Parameters**
+
+| Name | Type | Required | Description |
+|---|---|---|---|
+| `handle` | `void*` | yes | Store handle. |
+| `frame_id` | `const char*` | yes | Center frame ID. |
+| `warp_spec_json` | `const char*` | yes | WarpSpec JSON in the `seraph_store_search_with_warp_spec` format. |
+| `tau` | `float` | yes | Similarity floor (cosine); `0.0` disables it. |
+| `hops` | `size_t` | yes | Traversal radius in hops. |
+
+**Returns:** the same JSON as `seraph_store_neighborhood` (free with `seraph_string_free`), or `NULL` on error.
+
+**Errors:** `NULL` on a `NULL` handle or a failed operation; `seraph_last_error` has the message.
+
 ### `seraph_store_apply_warp`
 
-Apply warp to a query embedding without searching. Pure vector math; no handle
-required.
+Apply a warp field to a query embedding without searching (pure vector math).
 
 ```c
 int seraph_store_apply_warp(
-    const float* query_embedding, size_t query_len,
+    const float* query_embedding,
+    size_t query_len,
     const char* targets_json,
     const char* suppress_json,
     const char* profile,
@@ -2151,13 +2904,13 @@ int seraph_store_apply_warp(
 | Name | Type | Required | Description |
 |---|---|---|---|
 | `query_embedding` | `const float*` | yes | Query vector. |
-| `query_len` | `size_t` | yes | Vector length. |
-| `targets_json` | `const char*` | yes | Warp entry array (pull). See [Warp entry JSON format](#seraph_store_search_with_warp). |
-| `suppress_json` | `const char*` | yes | Warp entry array (suppression). |
+| `query_len` | `size_t` | yes | Length of `query`. |
+| `targets_json` | `const char*` | yes | (embedding, magnitude) pull pairs. |
+| `suppress_json` | `const char*` | yes | (embedding, magnitude) suppression pairs. |
 | `profile` | `const char*` | yes | `"routing"`, `"saturation"`, or `"bounded"`. |
-| `bound_k` | `float` | yes | Suppression cap (only used by `"bounded"`). |
-| `out_embedding` | `float**` | yes | Out: warped vector. Free with `seraph_floats_free`. |
-| `out_dim` | `size_t*` | yes | Out: vector length. |
+| `bound_k` | `float` | yes | Suppression-norm cap. |
+| `out_embedding` | `float**` | yes | Out: embedding. |
+| `out_dim` | `size_t*` | yes | Out: dim. |
 
 **Returns:** `0` on success, negative on error.
 
@@ -2174,12 +2927,13 @@ seraph_floats_free(warped, dim);
 
 ### `seraph_store_warp_query`
 
-Apply a WarpSpec JSON to a query embedding.
+Apply a warp specification to a query and return the warped vector, without searching.
 
 ```c
 int seraph_store_warp_query(
     void* handle,
-    const float* query_embedding, size_t query_len,
+    const float* query_embedding,
+    size_t query_len,
     const char* warp_spec_json,
     float** out_embedding,
     size_t* out_dim
@@ -2191,11 +2945,11 @@ int seraph_store_warp_query(
 | Name | Type | Required | Description |
 |---|---|---|---|
 | `handle` | `void*` | yes | Store handle. |
-| `query_embedding` | `const float*` | yes | Query vector. |
-| `query_len` | `size_t` | yes | Vector length. |
-| `warp_spec_json` | `const char*` | yes | Full WarpSpec JSON. [PLACEHOLDER: WarpSpec JSON schema] |
-| `out_embedding` | `float**` | yes | Out: warped vector. Free with `seraph_floats_free`. |
-| `out_dim` | `size_t*` | yes | Out: vector length. |
+| `query_embedding` | `const float*` | yes | Query vector, or on Python a text string that is encoded first. |
+| `query_len` | `size_t` | yes | Length of `query`. |
+| `warp_spec_json` | `const char*` | yes | WarpSpec JSON in the `seraph_store_search_with_warp_spec` format. |
+| `out_embedding` | `float**` | yes | Out: embedding. |
+| `out_dim` | `size_t*` | yes | Out: dim. |
 
 **Returns:** `0` on success, negative on error.
 
@@ -2211,7 +2965,7 @@ seraph_floats_free(warped, dim);
 
 ### `seraph_store_calibrate_warp`
 
-Sweep magnitudes over sampled query/target pairs and report calibration results.
+Run an empirical magnitude calibration sweep against the store.
 
 ```c
 char* seraph_store_calibrate_warp(
@@ -2231,8 +2985,8 @@ char* seraph_store_calibrate_warp(
 | `handle` | `void*` | yes | Store handle. |
 | `n_queries` | `size_t` | yes | Number of sampled queries. |
 | `n_targets` | `size_t` | yes | Number of sampled targets. |
-| `magnitudes_json` | `const char*` | yes | JSON array of magnitudes to sweep. |
-| `top_k` | `size_t` | yes | Hits per probe. |
+| `magnitudes_json` | `const char*` | yes | Magnitudes to sweep; `NULL` uses defaults. |
+| `top_k` | `size_t` | yes | Maximum number of hits. |
 | `seed` | `uint64_t` | yes | RNG seed for reproducible sampling. |
 
 **Returns:** JSON calibration report (free with `seraph_string_free`), or `NULL` on error.
@@ -2258,122 +3012,223 @@ functions return a sentinel (e.g. `NaN` / negative) on error — check
 
 ### `seraph_store_density_score`
 
+Local density score for a frame.
+
 ```c
 float seraph_store_density_score(void* handle, const char* frame_id);
 ```
 
-**Parameters:** `handle` (`void*`, yes), `frame_id` (`const char*`, yes).
+**Parameters**
+
+| Name | Type | Required | Description |
+|---|---|---|---|
+| `handle` | `void*` | yes | Store handle. |
+| `frame_id` | `const char*` | yes | Frame ID. |
+
 **Returns:** Local density score. **Errors:** sentinel value on missing frame / `NULL` handle.
 
+**Errors:** `NULL` on a `NULL` handle or a failed operation; `seraph_last_error` has the message.
+
 ### `seraph_store_seed_margin`
+
+Seed margin: a frame's geometric distinctness relative to the corpus centroid.
 
 ```c
 float seraph_store_seed_margin(void* handle, const char* frame_id);
 ```
 
-**Parameters:** `handle` (`void*`, yes), `frame_id` (`const char*`, yes).
+**Parameters**
+
+| Name | Type | Required | Description |
+|---|---|---|---|
+| `handle` | `void*` | yes | Store handle. |
+| `frame_id` | `const char*` | yes | Frame ID. |
+
 **Returns:** Distance to the nearest seed. **Errors:** sentinel value on error.
+
+**Errors:** `NULL` on a `NULL` handle or a failed operation; `seraph_last_error` has the message.
 
 ### `seraph_store_steerability`
 
+Warp steerability: angular displacement of a query toward a target at routing magnitude.
+
 ```c
-float seraph_store_steerability(void* handle, const float* query_embedding, size_t query_len, const char* target_id);
+float seraph_store_steerability(
+    void* handle,
+    const float* query_embedding,
+    size_t query_len,
+    const char* target_id
+);
 ```
 
-**Parameters:** `handle` (`void*`, yes), `query_embedding` (`const float*`, yes), `query_len` (`size_t`, yes), `target_id` (`const char*`, yes).
+**Parameters**
+
+| Name | Type | Required | Description |
+|---|---|---|---|
+| `handle` | `void*` | yes | Store handle. |
+| `query_embedding` | `const float*` | yes | Query vector. |
+| `query_len` | `size_t` | yes | Length of `query`. |
+| `target_id` | `const char*` | yes | Target frame ID. |
+
 **Returns:** Steerability score for warping the query toward `target_id`. **Errors:** sentinel on dimension mismatch / missing target.
 
+**Errors:** `NULL` on a `NULL` handle or a failed operation; `seraph_last_error` has the message.
+
 ### `seraph_store_region_health`
+
+Region health metrics for an eigenframe.
 
 ```c
 char* seraph_store_region_health(void* handle, const char* eigenframe_id);
 ```
 
-**Parameters:** `handle` (`void*`, yes), `eigenframe_id` (`const char*`, yes).
+**Parameters**
+
+| Name | Type | Required | Description |
+|---|---|---|---|
+| `handle` | `void*` | yes | Store handle. |
+| `eigenframe_id` | `const char*` | yes | Eigenframe ID. |
+
 **Returns:** JSON health report (free with `seraph_string_free`), or `NULL`. **Response:** [PLACEHOLDER: region health JSON shape]
+
+**Errors:** `NULL` on a `NULL` handle or a failed operation; `seraph_last_error` has the message.
 
 ### `seraph_store_region_health_struct`
 
+Region health for an eigenframe as a fixed struct instead of JSON.
+
 ```c
-int seraph_store_region_health_struct(void* handle, const char* eigenframe_id, SeraphRegionHealth* out);
+int seraph_store_region_health_struct(
+    void* handle,
+    const char* eigenframe_id,
+    SeraphRegionHealth* out
+);
 ```
 
-**Parameters:** `handle` (`void*`, yes), `eigenframe_id` (`const char*`, yes), `out` ([`SeraphRegionHealth`](#seraphregionhealth)`*`, yes).
+**Parameters**
+
+| Name | Type | Required | Description |
+|---|---|---|---|
+| `handle` | `void*` | yes | Store handle. |
+| `eigenframe_id` | `const char*` | yes | Eigenframe ID. |
+| `out` | `SeraphRegionHealth*` | yes | Out: struct filled on success. |
+
 **Returns:** `0` on success, negative on error.
 
+**Errors:** `-1` if the handle is `NULL`.
+
 ### `seraph_store_similarity_stats`
+
+Similarity distribution computed from parent-child relationships.
 
 ```c
 char* seraph_store_similarity_stats(void* handle);
 ```
 
-**Parameters:** `handle` (`void*`, yes).
+**Parameters**
+
+| Name | Type | Required | Description |
+|---|---|---|---|
+| `handle` | `void*` | yes | Store handle. |
+
 **Returns:** JSON similarity distribution (free with `seraph_string_free`), or `NULL`. **Response:** [PLACEHOLDER: similarity stats JSON shape]
 
+**Errors:** `NULL` on a `NULL` handle or a failed operation; `seraph_last_error` has the message.
+
 ### `seraph_store_sim_neighbors`
+
+Similarity neighbours of a frame: the live edge set. Includes edges other frames aimed at this one, so it is the traversable neighbourhood rather than the frame's own choice; for that, see `committed_sim_edges`.
 
 ```c
 char* seraph_store_sim_neighbors(void* handle, const char* frame_id);
 ```
 
-Similarity neighbours of a frame — the **live** edge set. Includes edges other
-frames aimed at this one, so it is the traversable neighbourhood rather than
-the frame's own choice; for that see `seraph_store_committed_sim_edges`.
+**Parameters**
 
-**Parameters:** `handle` (`void*`, yes), `frame_id` (`const char*`, yes).
+| Name | Type | Required | Description |
+|---|---|---|---|
+| `handle` | `void*` | yes | Store handle. |
+| `frame_id` | `const char*` | yes | Frame whose neighbours to list. |
+
 **Returns:** JSON array of `{"frame_id": "...", "weight": 0.87}` (free with `seraph_string_free`), `[]` for an unknown frame, or `NULL` on error.
 
+**Errors:** `NULL` on a `NULL` handle or a failed operation; `seraph_last_error` has the message.
+
 ### `seraph_store_committed_sim_edges`
+
+The similarity neighbours this frame chose when it was committed, resolved to ids. Always a subset of `sim_neighbors`. `None` for a frame written before the choice was recorded.
 
 ```c
 char* seraph_store_committed_sim_edges(void* handle, const char* frame_id);
 ```
 
-The similarity neighbours a frame **chose at commit time**, resolved to ids.
-Provenance rather than topology: what the frame decided against the store as it
-stood, not what accumulated around it. Always a subset of
-`seraph_store_sim_neighbors`. Frames written before the choice was recorded
-return JSON `null` — recovering theirs requires a replay.
+**Parameters**
 
-**Parameters:** `handle` (`void*`, yes), `frame_id` (`const char*`, yes).
+| Name | Type | Required | Description |
+|---|---|---|---|
+| `handle` | `void*` | yes | Store handle. |
+| `frame_id` | `const char*` | yes | Frame whose committed choice to read. |
+
 **Returns:** JSON array of `{"frame_id": "...", "weight": 0.87}`, JSON `null` if unrecorded (free with `seraph_string_free`), or `NULL` on error.
 
+**Errors:** `NULL` on a `NULL` handle or a failed operation; `seraph_last_error` has the message.
+
 ### `seraph_store_similarity_stats_struct`
+
+The parent-child similarity distribution as a fixed struct instead of JSON.
 
 ```c
 int seraph_store_similarity_stats_struct(void* handle, SeraphSimilarityStats* out);
 ```
 
-**Parameters:** `handle` (`void*`, yes), `out` ([`SeraphSimilarityStats`](#seraphsimilaritystats)`*`, yes).
+**Parameters**
+
+| Name | Type | Required | Description |
+|---|---|---|---|
+| `handle` | `void*` | yes | Store handle. |
+| `out` | `SeraphSimilarityStats*` | yes | Out: struct filled on success. |
+
 **Returns:** `0` on success, negative on error.
 
+**Errors:** `-1` if the handle is `NULL`.
+
 ### `seraph_store_resolve_tau`
+
+Resolve a tau value against the store's background similarity: `None` gives the p95, `"loose"` the p75, `"strict"` the p99, and a float passes through.
 
 ```c
 float seraph_store_resolve_tau(void* handle);
 ```
 
-**Parameters:** `handle` (`void*`, yes).
+**Parameters**
+
+| Name | Type | Required | Description |
+|---|---|---|---|
+| `handle` | `void*` | yes | Store handle. |
+
 **Returns:** Auto-resolved `tau` value for the store. **Errors:** sentinel on `NULL` handle.
+
+**Errors:** `NULL` on a `NULL` handle or a failed operation; `seraph_last_error` has the message.
 
 ### `seraph_store_resolve_tau_spec`
 
-Resolve tau from an explicit spec against the background-similarity
-distribution. The `mode` enum is shared by every `*_spec` function:
-
-| `mode` | Meaning |
-|---|---|
-| `0` | Auto — background p95 (same as `seraph_store_resolve_tau`). |
-| `1` | Loose — background p75. |
-| `2` | Strict — background p99. |
-| `3` | Explicit — `value` is returned unchanged. |
+Resolve tau from a spec against the store's background similarity: auto (p95), loose (p75), strict (p99) or an explicit value passed through.
 
 ```c
-float seraph_store_resolve_tau_spec(void* handle, int mode, float value);
+float seraph_store_resolve_tau_spec(void* handle, int tau_mode, float tau_value);
 ```
 
-**Parameters:** `handle` (`void*`, yes), `mode` (`int`, yes — see table), `value` (`float`, yes — used only for mode `3`).
-**Returns:** Resolved tau, or the `0.5` sentinel on error (check `seraph_last_error()`). **Errors:** `NULL` handle or an out-of-range `mode`.
+**Parameters**
+
+| Name | Type | Required | Description |
+|---|---|---|---|
+| `handle` | `void*` | yes | Store handle. |
+| `tau_mode` | `int` | yes | Tau spec mode: `0` auto (background p95), `1` loose (p75), `2` strict (p99), `3` explicit `tau_value`. |
+| `tau_value` | `float` | yes | Explicit tau, used when `tau_mode` is `3`. |
+
+**Returns:** Resolved tau, or the `0.5` sentinel on error (check `seraph_last_error()`).
+
+**Errors:** `NULL` handle or an out-of-range `tau_mode`.
 
 ---
 
@@ -2384,53 +3239,100 @@ error (`NULL` handle / malformed args).
 
 ### `seraph_store_drift_report`
 
+Scan eigenframes for semantic drift: children drifting away from their eigenframe.
+
 ```c
 char* seraph_store_drift_report(void* handle, size_t window, float threshold);
 ```
 
-**Parameters:** `handle` (`void*`, yes), `window` (`size_t`, yes — recent-frame window), `threshold` (`float`, yes — drift trigger).
+**Parameters**
+
+| Name | Type | Required | Description |
+|---|---|---|---|
+| `handle` | `void*` | yes | Store handle. |
+| `window` | `size_t` | yes | Recent-frame window. |
+| `threshold` | `float` | yes | Drift trigger threshold. |
+
 **Returns:** JSON drift report. **Response:** [PLACEHOLDER: drift report JSON shape]
 
+**Errors:** `NULL` on a `NULL` handle or a failed operation; `seraph_last_error` has the message.
+
 ### `seraph_store_contradictions`
+
+Detect high-divergence siblings under a shared parent.
 
 ```c
 char* seraph_store_contradictions(void* handle, float min_divergence);
 ```
 
-**Parameters:** `handle` (`void*`, yes), `min_divergence` (`float`, yes — minimum semantic divergence to flag).
+**Parameters**
+
+| Name | Type | Required | Description |
+|---|---|---|---|
+| `handle` | `void*` | yes | Store handle. |
+| `min_divergence` | `float` | yes | Minimum divergence to flag. |
+
 **Returns:** JSON contradiction list. **Response:** [PLACEHOLDER: contradictions JSON shape]
+
+**Errors:** `NULL` on a `NULL` handle or a failed operation; `seraph_last_error` has the message.
 
 ### `seraph_store_contradictions_v2`
 
-Three-population contradiction scan: `geometric` (high cosine, divergent
-content), `lineage` (same-subtree siblings that drifted apart), and `consensus`
-(both signals). `tau_mode` / `tau_value` follow the enum documented on
-[`seraph_store_resolve_tau_spec`](#seraph_store_resolve_tau_spec).
+Three-population contradiction detection: geometric, lineage and consensus pairs.
 
 ```c
 char* seraph_store_contradictions_v2(void* handle, int tau_mode, float tau_value);
 ```
 
-**Parameters:** `handle` (`void*`, yes), `tau_mode` (`int`, yes — `0` auto, `1` loose, `2` strict, `3` explicit), `tau_value` (`float`, yes — used only for mode `3`).
+**Parameters**
+
+| Name | Type | Required | Description |
+|---|---|---|---|
+| `handle` | `void*` | yes | Store handle. |
+| `tau_mode` | `int` | yes | Tau spec mode: `0` auto (background p95), `1` loose (p75), `2` strict (p99), `3` explicit `tau_value`. |
+| `tau_value` | `float` | yes | Explicit tau, used when `tau_mode` is `3`. |
+
 **Returns:** JSON `{"geometric": [...], "lineage": [...], "consensus": [...]}`; each pair is `{"frame_a_id", "frame_b_id", "cosine", "shared_parent", "content_divergence"}`. **Errors:** `NULL` on a `NULL` handle or invalid `tau_mode`.
 
+**Errors:** `NULL` on a `NULL` handle or a failed operation; `seraph_last_error` has the message.
+
 ### `seraph_store_evolution`
+
+Concept evolution trajectory from a seed frame, in timestamp order.
 
 ```c
 char* seraph_store_evolution(void* handle, const char* seed_frame_id);
 ```
 
-**Parameters:** `handle` (`void*`, yes), `seed_frame_id` (`const char*`, yes).
+**Parameters**
+
+| Name | Type | Required | Description |
+|---|---|---|---|
+| `handle` | `void*` | yes | Store handle. |
+| `seed_frame_id` | `const char*` | yes | Seed frame ID. |
+
 **Returns:** JSON evolution trace for the seed's region. **Response:** [PLACEHOLDER: evolution JSON shape]
 
+**Errors:** `NULL` on a `NULL` handle or a failed operation; `seraph_last_error` has the message.
+
 ### `seraph_store_merge_candidates`
+
+Find clusters of similar frames that could be consolidated.
 
 ```c
 char* seraph_store_merge_candidates(void* handle, float tau);
 ```
 
-**Parameters:** `handle` (`void*`, yes), `tau` (`float`, yes — similarity threshold for candidacy).
+**Parameters**
+
+| Name | Type | Required | Description |
+|---|---|---|---|
+| `handle` | `void*` | yes | Store handle. |
+| `tau` | `float` | yes | Similarity floor (cosine); `0.0` disables it. |
+
 **Returns:** JSON list of candidate frame groups. **Response:** [PLACEHOLDER: merge candidates JSON shape]
+
+**Errors:** `NULL` on a `NULL` handle or a failed operation; `seraph_last_error` has the message.
 
 ---
 
@@ -2438,9 +3340,7 @@ char* seraph_store_merge_candidates(void* handle, float tau);
 
 ### `seraph_store_consolidate`
 
-Consolidate a specified set of frames into one, emitting redirect frames for the
-superseded sources. Consolidation-exempt statuses (Genesis, Seed, Redirect,
-System) are skipped.
+Consolidate a specific set of frames into one centroid frame.
 
 ```c
 char* seraph_store_consolidate(void* handle, const char* frame_ids_json);
@@ -2451,7 +3351,7 @@ char* seraph_store_consolidate(void* handle, const char* frame_ids_json);
 | Name | Type | Required | Description |
 |---|---|---|---|
 | `handle` | `void*` | yes | Store handle. |
-| `frame_ids_json` | `const char*` | yes | JSON array of frame ID strings to consolidate. |
+| `frame_ids_json` | `const char*` | yes | Frame IDs to consolidate. |
 
 **Returns:** JSON consolidation report (free with `seraph_string_free`), or `NULL` on error.
 
@@ -2468,12 +3368,15 @@ seraph_string_free(report);
 
 ### `seraph_store_consolidate_with_strategy`
 
-Consolidate a list of frames under an explicit merge strategy. Same report as
-[`seraph_store_consolidate`](#seraph_store_consolidate), but frame IDs are
-passed as a C string array rather than JSON.
+Consolidate with an explicit `MergeStrategy`.
 
 ```c
-char* seraph_store_consolidate_with_strategy(void* handle, const char** frame_ids, size_t count, int strategy);
+char* seraph_store_consolidate_with_strategy(
+    void* handle,
+    const char* const* frame_ids,
+    size_t count,
+    int strategy
+);
 ```
 
 **Parameters**
@@ -2481,9 +3384,9 @@ char* seraph_store_consolidate_with_strategy(void* handle, const char** frame_id
 | Name | Type | Required | Description |
 |---|---|---|---|
 | `handle` | `void*` | yes | Store handle. |
-| `frame_ids` | `const char**` | yes | Array of frame ID strings to consolidate. |
-| `count` | `size_t` | yes | Number of entries in `frame_ids`. |
-| `strategy` | `int` | yes | `0` = geometric (most-central source frame's content — the `seraph_store_consolidate` behavior); `1` = semantic (LLM synthesis — not implemented in the Rust runtime; always errors). |
+| `frame_ids` | `const char* const*` | yes | Frame IDs to consolidate. |
+| `count` | `size_t` | yes | Number of items. |
+| `strategy` | `int` | yes | `MergeStrategy.Geometric` (supported); `MergeStrategy.Semantic` raises. |
 
 **Returns:** JSON consolidation report (free with `seraph_string_free`), or `NULL` on error.
 
@@ -2499,7 +3402,7 @@ seraph_string_free(report);
 
 ### `seraph_store_consolidate_all`
 
-Consolidate every eligible merge group across the store.
+Auto-detect and consolidate all merge candidates in one pass.
 
 ```c
 char* seraph_store_consolidate_all(void* handle);
@@ -2526,12 +3429,7 @@ seraph_string_free(report);
 
 ### `seraph_store_supersede`
 
-Soft-forget a single frame: flips its status to `Superseded` **in place**
-(status is not part of the watermark). Unlike consolidation, this creates **no**
-new frame and **no** redirect — and it does not reparent the frame's children,
-which continue to chain to the now-superseded frame. Returns the same frame ID
-echoed back. Consolidation-exempt frames (Genesis, Seed, Redirect, System) are
-rejected.
+Soft-forget a single frame: flips its status to Superseded in place. Creates no new frame and no redirect, and does not reparent children.
 
 ```c
 char* seraph_store_supersede(void* handle, const char* frame_id);
@@ -2562,7 +3460,7 @@ seraph_string_free(id);
 
 ### `seraph_store_declare_relation`
 
-Declare a typed relation kind before asserting edges of that kind.
+Declare a named structural relation type. Returns the slot ID.
 
 ```c
 int seraph_store_declare_relation(void* handle, const char* name, uint32_t flags);
@@ -2573,8 +3471,8 @@ int seraph_store_declare_relation(void* handle, const char* name, uint32_t flags
 | Name | Type | Required | Description |
 |---|---|---|---|
 | `handle` | `void*` | yes | Store handle. |
-| `name` | `const char*` | yes | Relation name. |
-| `flags` | `uint32_t` | yes | Relation flag bitset. [PLACEHOLDER: flag bit meanings] |
+| `name` | `const char*` | yes | Relation name (e.g. `"references"`, `"contradicts"`). |
+| `flags` | `uint32_t` | yes | Relation flag bitfield (see `RelationFlags`); `1` is Active. |
 
 **Returns:** `0` on success, negative on error.
 
@@ -2588,7 +3486,7 @@ seraph_store_declare_relation(store, "cites", 0);
 
 ### `seraph_store_list_relations`
 
-List all declared relation kinds.
+List all declared relation types.
 
 ```c
 char* seraph_store_list_relations(void* handle);
@@ -2620,8 +3518,10 @@ Assert a typed edge between two frames.
 ```c
 int seraph_store_assert_relation(
     void* handle,
-    const char* from_id, const char* to_id,
-    const char* relation, float weight
+    const char* from_id,
+    const char* to_id,
+    const char* relation,
+    float weight
 );
 ```
 
@@ -2647,12 +3547,13 @@ seraph_store_assert_relation(store, a, b, "cites", 1.0f);
 
 ### `seraph_store_retract_relation`
 
-Retract a previously asserted typed edge.
+Retract a typed edge.
 
 ```c
 int seraph_store_retract_relation(
     void* handle,
-    const char* from_id, const char* to_id,
+    const char* from_id,
+    const char* to_id,
     const char* relation
 );
 ```
@@ -2678,7 +3579,7 @@ seraph_store_retract_relation(store, a, b, "cites");
 
 ### `seraph_store_structural_neighbors`
 
-List frames connected to a frame by typed edges.
+Find neighbours via typed edges.
 
 ```c
 char* seraph_store_structural_neighbors(
@@ -2694,8 +3595,8 @@ char* seraph_store_structural_neighbors(
 | Name | Type | Required | Description |
 |---|---|---|---|
 | `handle` | `void*` | yes | Store handle. |
-| `frame_id` | `const char*` | yes | Center frame ID. |
-| `relations_json` | `const char*` | no | JSON array of relation names, or `NULL` for all. |
+| `frame_id` | `const char*` | yes | Source frame. |
+| `relations_json` | `const char*` | yes | Relation names to traverse. |
 | `direction` | `const char*` | yes | `"outgoing"`, `"incoming"`, or `"both"`. |
 
 **Returns:** JSON array of neighbor frames/edges (free with `seraph_string_free`), or `NULL` on error.
@@ -2713,7 +3614,7 @@ seraph_string_free(json);
 
 ### `seraph_store_filter_by_relation`
 
-Filter a hit list by structural-relation presence.
+Filter a (frame_id, score) hit list to those participating in any of the given relations.
 
 ```c
 char* seraph_store_filter_by_relation(
@@ -2730,10 +3631,10 @@ char* seraph_store_filter_by_relation(
 | Name | Type | Required | Description |
 |---|---|---|---|
 | `handle` | `void*` | yes | Store handle. |
-| `hits_json` | `const char*` | yes | JSON array of `{"frame_id": "...", "score": 0.9}` objects. |
-| `relations_json` | `const char*` | yes | JSON array of relation names. |
+| `hits_json` | `const char*` | yes | Input (frame_id, score) hits. |
+| `relations_json` | `const char*` | yes | Relation names. |
 | `direction` | `const char*` | yes | `"outgoing"`, `"incoming"`, or `"both"`. |
-| `require_present` | `bool` | yes | If `true`, keep hits that HAVE a matching relation; if `false`, keep hits that LACK one. |
+| `require_present` | `bool` | yes | Keep hits participating in the relation (`True`) or exclude them. |
 
 **Returns:** JSON array of `{"frame_id","score"}` objects (free with `seraph_string_free`), or `NULL` on error.
 
@@ -2741,7 +3642,7 @@ char* seraph_store_filter_by_relation(
 
 ### `seraph_store_structural_expand`
 
-Expand a hit list by one hop along structural relations (pipeline composition).
+Expand an existing (frame_id, score) hit list by one hop along structural relations.
 
 ```c
 char* seraph_store_structural_expand(
@@ -2758,10 +3659,10 @@ char* seraph_store_structural_expand(
 | Name | Type | Required | Description |
 |---|---|---|---|
 | `handle` | `void*` | yes | Store handle. |
-| `hits_json` | `const char*` | yes | JSON array of `{"frame_id": "...", "score": 0.9}` objects. |
-| `relations_json` | `const char*` | yes | JSON array of relation names. |
+| `hits_json` | `const char*` | yes | Input (frame_id, score) hits. |
+| `relations_json` | `const char*` | yes | Relation names to traverse. |
 | `direction` | `const char*` | yes | `"outgoing"`, `"incoming"`, or `"both"`. |
-| `score_combine` | `const char*` | yes | `"multiply"`, `"min"`, `"max"`, or `"keep_input"` (unrecognized values default to `keep_input`). |
+| `score_combine` | `const char*` | yes | `"multiply"`, `"min"`, `"max"`, or `"keep_input"`. |
 
 **Returns:** JSON array of `{"frame_id","score"}` objects (free with `seraph_string_free`), or `NULL` on error.
 
@@ -2769,7 +3670,7 @@ char* seraph_store_structural_expand(
 
 ### `seraph_store_gradient`
 
-Compute the semantic gradient along an ordered chain of frame IDs.
+Semantic gradient along an ordered list of frame IDs: one GradientPoint per step.
 
 ```c
 char* seraph_store_gradient(void* handle, const char* chain_json);
@@ -2780,7 +3681,7 @@ char* seraph_store_gradient(void* handle, const char* chain_json);
 | Name | Type | Required | Description |
 |---|---|---|---|
 | `handle` | `void*` | yes | Store handle. |
-| `chain_json` | `const char*` | yes | JSON array of frame-id strings. |
+| `chain_json` | `const char*` | yes | Ordered frame IDs. |
 
 **Returns:** JSON array of `{"frame_id": "...", "similarity": 0.9, "delta": 0.1}` objects, one per chain step (free with `seraph_string_free`), or `NULL` on error.
 
@@ -2788,7 +3689,7 @@ char* seraph_store_gradient(void* handle, const char* chain_json);
 
 ### `seraph_store_constitutive_score`
 
-Constitutive score for a chain: `1 - jaccard(chain_intermediates, midpoint_NN)`. Values below `0.20` indicate the chain carries constitutive information beyond what a midpoint search would surface.
+How much a chain says beyond a search at its midpoint: `1 - jaccard(chain_intermediates, midpoint_NN)` for an ordered frame-ID list. Values below `0.20` indicate the chain carries little beyond that search.
 
 ```c
 float seraph_store_constitutive_score(void* handle, const char* chain_json);
@@ -2799,7 +3700,7 @@ float seraph_store_constitutive_score(void* handle, const char* chain_json);
 | Name | Type | Required | Description |
 |---|---|---|---|
 | `handle` | `void*` | yes | Store handle. |
-| `chain_json` | `const char*` | yes | JSON array of frame-id strings. |
+| `chain_json` | `const char*` | yes | Ordered frame IDs. |
 
 **Returns:** The `float` constitutive score.
 
@@ -2811,7 +3712,7 @@ float seraph_store_constitutive_score(void* handle, const char* chain_json);
 
 ### `seraph_store_verify`
 
-Verify the watermark chain.
+Verify watermark-chain integrity.
 
 ```c
 int seraph_store_verify(void* handle, char** out_failures_json);
@@ -2822,7 +3723,7 @@ int seraph_store_verify(void* handle, char** out_failures_json);
 | Name | Type | Required | Description |
 |---|---|---|---|
 | `handle` | `void*` | yes | Store handle. |
-| `out_failures_json` | `char**` | yes | Out: JSON array of failure descriptions when invalid. Free with `seraph_string_free`. |
+| `out_failures_json` | `char**` | yes | Out: failures json. |
 
 **Returns:** `0` if the chain is valid; non-zero if invalid.
 
@@ -2837,11 +3738,95 @@ char* fails = NULL;
 if (seraph_store_verify(store, &fails) != 0) { puts(fails); seraph_string_free(fails); }
 ```
 
+### `seraph_store_seal_with_anchor`
+
+Seal with an external time anchor over the order digest of every frame before the seal (take it with `order_digest` after the last write). The engine records `backend` and the token; it does not contact the backend. Requires Commercial or higher. On the Python surface this is `seal(reason, anchor_backend, anchor_token)`.
+
+```c
+char* seraph_store_seal_with_anchor(
+    void* handle,
+    const char* reason,
+    const char* backend,
+    const uint8_t* token,
+    size_t token_len
+);
+```
+
+**Parameters**
+
+| Name | Type | Required | Description |
+|---|---|---|---|
+| `handle` | `void*` | yes | Store handle. |
+| `reason` | `const char*` | yes | Reason recorded in the seal. |
+| `backend` | `const char*` | yes | Anchor backend name. |
+| `token` | `const uint8_t*` | yes | The backend's token over the order digest. |
+| `token_len` | `size_t` | yes | Length of `token`. |
+
+**Returns:** Seal frame ID (free with `seraph_string_free`), or `NULL` on error.
+
+**Errors:** `NULL` if already sealed, the tier does not support sealing, or `backend` is `NULL`.
+
+**Example**
+
+```c
+char* id = seraph_store_seal_with_anchor(store, "final", "opentimestamps", tok, tok_len);
+seraph_string_free(id);
+```
+
+### `seraph_store_order_digest`
+
+The digest to anchor: a running SHA-256 over the watermarks in commit order (`d0 = SHA256("SERAPH:ORDER:v1")`, `d_i = SHA256(d_{i-1} || watermark_i)`), through `through_frame_id` or the whole store. From format 4 a watermark binds a frame's content, lineage, id, commit time and committed edges, so the 32 bytes fix all of them and their order. Anchor them, then record the token with `append_tip_anchor` or `seal`.
+
+```c
+char* seraph_store_order_digest(void* handle, const char* through_frame_id);
+```
+
+**Parameters**
+
+| Name | Type | Required | Description |
+|---|---|---|---|
+| `handle` | `void*` | yes | Store handle. |
+| `through_frame_id` | `const char*` | yes | Last frame covered; `NULL` for the whole log. |
+
+**Returns:** JSON `{"frame_count", "digest_hex"}` (free with `seraph_string_free`), or `NULL` on error.
+
+**Errors:** `NULL` if the frame is not found or on a null handle.
+
+**Example**
+
+```c
+char* json = seraph_store_order_digest(store, NULL);
+seraph_string_free(json);
+```
+
+### `seraph_store_anchor_claims`
+
+Every seal and tip anchor that commits to an order digest. `verify` checks each claim's digest against the log; the token is checked against the claim's `digest` by your anchor backend, directly or through `verify_attestation(anchor_verifier=...)`.
+
+```c
+char* seraph_store_anchor_claims(void* handle);
+```
+
+**Parameters**
+
+| Name | Type | Required | Description |
+|---|---|---|---|
+| `handle` | `void*` | yes | Store handle. |
+
+**Returns:** JSON `[{"kind", "sentinel_id", "frame_count", "digest_hex", "backend", "token_b64"}]` (free with `seraph_string_free`), or `NULL` on error.
+
+**Errors:** `NULL` on a null handle.
+
+**Example**
+
+```c
+char* json = seraph_store_anchor_claims(store);
+seraph_string_free(json);
+```
+
 ### `seraph_store_seal`
 
-> 🔒 **Licensed.** Requires Commercial or Enterprise. Free-tier calls return `NULL` with an error set.
-
-Seal the store. All subsequent writes fail.
+Seal the store: commit a final sentinel and refuse further writes. The seal records the order digest of every frame before it (see `order_digest`), so `verify` detects any frame reordered, removed or added before the seal, and any frame after it. To anchor the seal externally: stop writing, take `order_digest()`, anchor its 32 bytes with your backend, then seal with `anchor_backend` and `anchor_token`; the engine records the token and never contacts the backend. Requires Commercial or higher.
 
 ```c
 char* seraph_store_seal(void* handle, const char* reason);
@@ -2852,7 +3837,7 @@ char* seraph_store_seal(void* handle, const char* reason);
 | Name | Type | Required | Description |
 |---|---|---|---|
 | `handle` | `void*` | yes | Store handle. |
-| `reason` | `const char*` | yes | Human-readable seal reason. |
+| `reason` | `const char*` | yes | Free-text reason recorded in the seal. |
 
 **Returns:** Seal frame ID (free with `seraph_string_free`), or `NULL` on error.
 
@@ -2867,7 +3852,7 @@ seraph_string_free(sid);
 
 ### `seraph_store_is_sealed`
 
-Check whether the store is sealed. Available to all tiers.
+Whether the store has been sealed (read-only). All tiers can open and read sealed stores.
 
 ```c
 int seraph_store_is_sealed(void* handle);
@@ -2891,7 +3876,7 @@ if (seraph_store_is_sealed(store)) puts("sealed");
 
 ### `seraph_store_writer_audit`
 
-Audit of writers/attestations in the store.
+Audit writer attribution across all frames.
 
 ```c
 char* seraph_store_writer_audit(void* handle);
@@ -2918,7 +3903,7 @@ seraph_string_free(json);
 
 ### `seraph_store_verify_attestation`
 
-Verify the store's attestation signatures.
+Full attestation audit: chain validity, genesis seed, operator identity, anchors, cross-customer writes.
 
 ```c
 char* seraph_store_verify_attestation(void* handle);
@@ -2945,16 +3930,7 @@ seraph_string_free(json);
 
 ### `seraph_store_content_set_root`
 
-Order-free commitment to the store's retrievable content. Leaf =
-`sha256(content_hash || codes)` per active-content frame (pre-v3 frames use
-their packed fine quant); root =
-`sha256("seraph-content-set/v1|<model_id>|<dim>|<n>" || sorted leaves)`. Two
-stores holding the same content under the same model produce the same root
-regardless of commit order, eigenframe set or graph — it commits to exactly
-what retrieval is a function of at a reach-complete `tau`. It ranges over every
-frame search can return (`Active`, `Eigenframe`, `Seed`, `Genesis`); System
-markers, redirects and superseded frames are excluded. Recomputable from the
-frame log alone.
+An order-free fingerprint of the store's retrievable content: sha256 over the sorted per-frame leaves `sha256(content_hash || codes)` under the header `"seraph-content-set/v1|<model_id>|<dim>|<n>"`. Two stores holding the same content under the same model give the same root regardless of commit order or graph. It ranges over every frame search can return; markers, redirects and superseded frames are excluded, and it is recomputable from the frame log alone.
 
 ```c
 char* seraph_store_content_set_root(void* handle);
@@ -2972,7 +3948,7 @@ char* seraph_store_content_set_root(void* handle);
 
 ### `seraph_store_genesis_seed`
 
-Fetch the genesis seed bytes.
+Raw genesis seed bytes (v2-attested stores only).
 
 ```c
 int seraph_store_genesis_seed(void* handle, uint8_t** out_seed, size_t* out_len);
@@ -2983,8 +3959,8 @@ int seraph_store_genesis_seed(void* handle, uint8_t** out_seed, size_t* out_len)
 | Name | Type | Required | Description |
 |---|---|---|---|
 | `handle` | `void*` | yes | Store handle. |
-| `out_seed` | `uint8_t**` | yes | Out: seed bytes. Free with `seraph_bytes_free`. |
-| `out_len` | `size_t*` | yes | Out: seed length. |
+| `out_seed` | `uint8_t**` | yes | Out: seed. |
+| `out_len` | `size_t*` | yes | Out: len. |
 
 **Returns:** `0` on success, negative on error.
 
@@ -2999,7 +3975,7 @@ if (seraph_store_genesis_seed(store, &seed, &len) == 0) seraph_bytes_free(seed, 
 
 ### `seraph_store_genesis_attestation`
 
-Fetch the genesis attestation.
+Genesis attestation header as a JSON string.
 
 ```c
 char* seraph_store_genesis_attestation(void* handle);
@@ -3030,15 +4006,14 @@ seraph_string_free(json);
 
 ### `seraph_store_append_tip_anchor`
 
-> 🔒 **Licensed.** Requires Commercial or Enterprise. Free-tier calls return `NULL` with an error set.
-
-Append a time-anchor proof covering a tip frame.
+Append a trusted-time anchor record to the chain tip. Requires a Commercial or Enterprise license.
 
 ```c
 char* seraph_store_append_tip_anchor(
     void* handle,
     const char* backend,
-    const uint8_t* token, size_t token_len,
+    const uint8_t* token,
+    size_t token_len,
     const char* tip_frame_id,
     const char* status,
     const char* supersedes
@@ -3050,12 +4025,12 @@ char* seraph_store_append_tip_anchor(
 | Name | Type | Required | Description |
 |---|---|---|---|
 | `handle` | `void*` | yes | Store handle. |
-| `backend` | `const char*` | yes | Anchor backend, e.g. `"opentimestamps"`, `"rfc3161"`. |
+| `backend` | `const char*` | yes | Anchor backend (e.g. `"opentimestamps"`, `"rfc3161"`). |
 | `token` | `const uint8_t*` | yes | Proof/token bytes. |
 | `token_len` | `size_t` | yes | Length of `token`. |
 | `tip_frame_id` | `const char*` | yes | Frame ID this anchor covers. |
 | `status` | `const char*` | yes | `"pending"` or `"confirmed"`. |
-| `supersedes` | `const char*` | no | ID of a previous anchor to supersede, or `NULL`. |
+| `supersedes` | `const char*` | yes | Frame ID of a previous anchor this one supersedes. |
 
 **Returns:** Anchor frame ID (free with `seraph_string_free`), or `NULL` on error.
 
@@ -3071,7 +4046,7 @@ seraph_string_free(aid);
 
 ### `seraph_store_list_tip_anchors`
 
-List tip-anchor records. Available to all tiers.
+List tip anchor records as JSON strings. Available to all tiers.
 
 ```c
 char* seraph_store_list_tip_anchors(void* handle, int resolved);
@@ -3082,7 +4057,7 @@ char* seraph_store_list_tip_anchors(void* handle, int resolved);
 | Name | Type | Required | Description |
 |---|---|---|---|
 | `handle` | `void*` | yes | Store handle. |
-| `resolved` | `int` | yes | Non-zero collapses supersession chains to the latest version. |
+| `resolved` | `int` | yes | Return only resolved anchors. |
 
 **Returns:** JSON array of tip-anchor records (free with `seraph_string_free`), or `NULL` on error.
 
@@ -3103,7 +4078,7 @@ seraph_string_free(json);
 
 ### `seraph_store_snapshot`
 
-Capture a temporal snapshot of the store as of a timestamp.
+Frame IDs active at the given timestamp (microseconds).
 
 ```c
 SeraphSnapshot* seraph_store_snapshot(void* handle, int64_t at_timestamp_us);
@@ -3114,7 +4089,7 @@ SeraphSnapshot* seraph_store_snapshot(void* handle, int64_t at_timestamp_us);
 | Name | Type | Required | Description |
 |---|---|---|---|
 | `handle` | `void*` | yes | Store handle. |
-| `at_timestamp_us` | `int64_t` | yes | Snapshot time, microseconds since epoch. |
+| `at_timestamp_us` | `int64_t` | yes | Point in time, microseconds since the epoch. |
 
 **Returns:** Snapshot handle, or `NULL` on error. Free with `seraph_snapshot_free`.
 
@@ -3128,7 +4103,7 @@ SeraphSnapshot* snap = seraph_store_snapshot(store, 1700000000000000LL);
 
 ### `seraph_snapshot_frame_ids`
 
-List the frame IDs visible in a snapshot.
+The frame IDs visible in a snapshot.
 
 ```c
 char* seraph_snapshot_frame_ids(const SeraphSnapshot* snapshot);
@@ -3153,7 +4128,7 @@ seraph_string_free(ids);
 
 ### `seraph_snapshot_timestamp`
 
-Return a snapshot's timestamp.
+The point in time a snapshot was taken at, in microseconds since the epoch.
 
 ```c
 int64_t seraph_snapshot_timestamp(const SeraphSnapshot* snapshot);
@@ -3177,13 +4152,14 @@ int64_t ts = seraph_snapshot_timestamp(snap);
 
 ### `seraph_store_snapshot_search`
 
-Search within a snapshot.
+Brute-force cosine search within a snapshot.
 
 ```c
 char* seraph_store_snapshot_search(
     void* handle,
     const SeraphSnapshot* snapshot,
-    const float* query_embedding, size_t query_len,
+    const float* query_embedding,
+    size_t query_len,
     size_t top_k
 );
 ```
@@ -3193,9 +4169,9 @@ char* seraph_store_snapshot_search(
 | Name | Type | Required | Description |
 |---|---|---|---|
 | `handle` | `void*` | yes | Store handle. |
-| `snapshot` | `const SeraphSnapshot*` | yes | Snapshot to search within. |
+| `snapshot` | `const SeraphSnapshot*` | yes | A snapshot view from `snapshot()`. |
 | `query_embedding` | `const float*` | yes | Query vector. |
-| `query_len` | `size_t` | yes | Vector length. |
+| `query_len` | `size_t` | yes | Length of `query`. |
 | `top_k` | `size_t` | yes | Maximum number of hits. |
 
 **Returns:** JSON array of hits as of the snapshot (free with `seraph_string_free`), or `NULL` on error.
@@ -3223,7 +4199,7 @@ void seraph_snapshot_free(SeraphSnapshot* snapshot);
 
 | Name | Type | Required | Description |
 |---|---|---|---|
-| `snapshot` | `SeraphSnapshot*` | yes | Snapshot to free. |
+| `snapshot` | `SeraphSnapshot*` | yes | Snapshot handle; NULL is ignored. |
 
 **Returns:** Nothing.
 
@@ -3250,7 +4226,7 @@ at subscription. [PLACEHOLDER: event_json shape per event type]
 
 ### `seraph_store_subscribe`
 
-Subscribe a callback to store events.
+Subscribe a callback to a store event (promote, drift, contradiction, consolidate, milestone); `on` is an alias of `subscribe`.
 
 ```c
 uint64_t seraph_store_subscribe(
@@ -3266,9 +4242,9 @@ uint64_t seraph_store_subscribe(
 | Name | Type | Required | Description |
 |---|---|---|---|
 | `handle` | `void*` | yes | Store handle. |
-| `event_name` | `const char*` | yes | `"promote"`, `"contradiction"`, `"drift"`, `"consolidation"`, `"milestone"`, or `"*"` for all. |
-| `callback` | `SeraphEventCallback` | yes | Callback invoked per event. |
-| `user_data` | `void*` | no | Opaque pointer passed back to the callback. |
+| `event_name` | `const char*` | yes | Event name. |
+| `callback` | `SeraphEventCallback` | yes | Callable receiving one payload object. |
+| `user_data` | `void*` | yes | Opaque pointer handed back to the callback. |
 
 **Returns:** Subscriber ID (non-zero), or `0` on error.
 
@@ -3282,7 +4258,7 @@ uint64_t sub = seraph_store_subscribe(store, "promote", on_event, NULL);
 
 ### `seraph_store_unsubscribe`
 
-Remove a subscription.
+Detach an event subscriber by ID.
 
 ```c
 int seraph_store_unsubscribe(void* handle, uint64_t subscriber_id);
@@ -3293,7 +4269,7 @@ int seraph_store_unsubscribe(void* handle, uint64_t subscriber_id);
 | Name | Type | Required | Description |
 |---|---|---|---|
 | `handle` | `void*` | yes | Store handle. |
-| `subscriber_id` | `uint64_t` | yes | ID returned by `seraph_store_subscribe`. |
+| `subscriber_id` | `uint64_t` | yes | ID returned by subscribe. |
 
 **Returns:** `0` on success, negative on error.
 
@@ -3307,7 +4283,7 @@ seraph_store_unsubscribe(store, sub);
 
 ### `seraph_store_subscriber_count`
 
-Return the number of active subscribers.
+Number of active subscribers.
 
 ```c
 size_t seraph_store_subscriber_count(void* handle);
@@ -3335,7 +4311,7 @@ size_t n = seraph_store_subscriber_count(store);
 
 ### `seraph_encoder_create`
 
-Create a standalone encoder. Downloads and caches the model on first use.
+Load an encoder by model ID, downloading and caching the model files on first use.
 
 ```c
 void* seraph_encoder_create(const char* model_id);
@@ -3345,7 +4321,7 @@ void* seraph_encoder_create(const char* model_id);
 
 | Name | Type | Required | Description |
 |---|---|---|---|
-| `model_id` | `const char*` | yes | Embedding model ID, e.g. `"BAAI/bge-small-en-v1.5"`. |
+| `model_id` | `const char*` | yes | Embedding model ID; `NULL` for the default model. |
 
 **Returns:** Encoder handle, or `NULL` on error.
 
@@ -3360,7 +4336,7 @@ if (!enc) { /* handle error */ }
 
 ### `seraph_encoder_encode`
 
-Encode one text into a freshly allocated embedding buffer.
+Encode one text into a normalized embedding with the loaded model. The FFI and wrapper also offer an `encode_into` variant that writes into a caller-supplied buffer.
 
 ```c
 int seraph_encoder_encode(void* handle, const char* text, float** out_embedding, size_t* out_dim);
@@ -3371,9 +4347,9 @@ int seraph_encoder_encode(void* handle, const char* text, float** out_embedding,
 | Name | Type | Required | Description |
 |---|---|---|---|
 | `handle` | `void*` | yes | Encoder handle. |
-| `text` | `const char*` | yes | Text to encode (UTF-8). |
-| `out_embedding` | `float**` | yes | Out: embedding. Free with `seraph_floats_free`. |
-| `out_dim` | `size_t*` | yes | Out: dimensionality. |
+| `text` | `const char*` | yes | Text to encode. |
+| `out_embedding` | `float**` | yes | Out: embedding. |
+| `out_dim` | `size_t*` | yes | Out: dim. |
 
 **Returns:** `0` on success, negative on error.
 
@@ -3389,10 +4365,16 @@ if (seraph_encoder_encode(enc, "the cat sat", &emb, &dim) == 0)
 
 ### `seraph_encoder_encode_into`
 
-Zero-copy variant: encode into a caller-owned buffer.
+Encode one text into a caller-owned buffer, with no allocation.
 
 ```c
-int seraph_encoder_encode_into(void* handle, const char* text, float* buf, size_t buf_len, size_t* out_written);
+int seraph_encoder_encode_into(
+    void* handle,
+    const char* text,
+    float* buf,
+    size_t buf_len,
+    size_t* out_written
+);
 ```
 
 **Parameters**
@@ -3401,9 +4383,9 @@ int seraph_encoder_encode_into(void* handle, const char* text, float* buf, size_
 |---|---|---|---|
 | `handle` | `void*` | yes | Encoder handle. |
 | `text` | `const char*` | yes | Text to encode. |
-| `buf` | `float*` | yes | Caller-owned destination buffer. |
-| `buf_len` | `size_t` | yes | Buffer capacity (elements). |
-| `out_written` | `size_t*` | yes | Out: elements written. |
+| `buf` | `float*` | yes | Caller-owned buffer of at least the model's dimension. |
+| `buf_len` | `size_t` | yes | Length of `buf`. |
+| `out_written` | `size_t*` | yes | Out: written. |
 
 **Returns:** `0` on success, negative on error.
 
@@ -3418,7 +4400,7 @@ seraph_encoder_encode_into(enc, "the cat sat", buf, 1024, &written);
 
 ### `seraph_encoder_encode_batch`
 
-Encode a batch of texts, returning JSON.
+Encode several texts in one batched forward pass. The FFI also offers `encode_batch_flat`, which writes all embeddings into one contiguous buffer and is the recommended batch path from C.
 
 ```c
 char* seraph_encoder_encode_batch(void* handle, const char* texts_json);
@@ -3429,7 +4411,7 @@ char* seraph_encoder_encode_batch(void* handle, const char* texts_json);
 | Name | Type | Required | Description |
 |---|---|---|---|
 | `handle` | `void*` | yes | Encoder handle. |
-| `texts_json` | `const char*` | yes | JSON array of strings. |
+| `texts_json` | `const char*` | yes | Texts to encode. |
 
 **Returns:** JSON array of embedding arrays (free with `seraph_string_free`), or `NULL` on error.
 
@@ -3444,17 +4426,15 @@ seraph_string_free(json);
 
 ### `seraph_encoder_encode_batch_flat`
 
-Batch-encode texts into a contiguous `float*` buffer in a single batched forward
-pass, amortising GPU kernel-launch and per-call marshalling overhead. **This is
-the recommended batch encode path** — it matches native Rust throughput
-(~600 enc/s on GPU). Output layout:
-`[emb0[0..dim], emb1[0..dim], ..., emb_{count-1}[0..dim]]`.
+Encode many texts in one batched pass into a single contiguous float buffer, laid out one embedding after another. The recommended batch encode path on C.
 
 ```c
 int seraph_encoder_encode_batch_flat(
     void* handle,
-    const char** texts, size_t count,
-    float** out_embeddings, size_t* out_dim
+    const char* const* texts,
+    size_t count,
+    float** out_embeddings,
+    size_t* out_dim
 );
 ```
 
@@ -3463,10 +4443,10 @@ int seraph_encoder_encode_batch_flat(
 | Name | Type | Required | Description |
 |---|---|---|---|
 | `handle` | `void*` | yes | Encoder handle. |
-| `texts` | `const char**` | yes | Array of C strings. |
-| `count` | `size_t` | yes | Number of texts. |
-| `out_embeddings` | `float**` | yes | Out: contiguous `[count × dim]` array. Free with `seraph_floats_free(out_embeddings, count * out_dim)`. |
-| `out_dim` | `size_t*` | yes | Out: embedding dimension. |
+| `texts` | `const char* const*` | yes | Texts to encode. |
+| `count` | `size_t` | yes | Number of items. |
+| `out_embeddings` | `float**` | yes | Out: embeddings. |
+| `out_dim` | `size_t*` | yes | Out: dim. |
 
 **Returns:** `0` on success, `-1` on error.
 
@@ -3515,7 +4495,7 @@ seraph_encoder_close(enc);
 
 ### `seraph_store_begin_batch`
 
-Begin a batch write session. Index updates are deferred until commit.
+Begin a buffered write batch. Writes skip the per-frame WAL and fsync until commit, which flushes once.
 
 ```c
 int seraph_store_begin_batch(void* handle);
@@ -3541,7 +4521,7 @@ seraph_store_commit(store);
 
 ### `seraph_store_commit`
 
-Commit the open batch and update all indices.
+End a buffered write batch: flush every buffered write to disk and restore per-write durability.
 
 ```c
 int seraph_store_commit(void* handle);
@@ -3582,9 +4562,7 @@ Federated search results are a JSON array of objects:
 
 ### `seraph_federation_open_dir`
 
-Open every `.sfg` store in a directory as a federation. Each store is named by its
-file stem (`physics.sfg` → `"physics"`); files whose stem starts with `_` or
-`router` are skipped.
+Open every `.sfg` store in a directory as a federation, each member named by its file stem (`physics.sfg` becomes `"physics"`); files starting with `_` or `router` are skipped.
 
 ```c
 void* seraph_federation_open_dir(const char* dir);
@@ -3594,24 +4572,29 @@ void* seraph_federation_open_dir(const char* dir);
 
 | Name | Type | Required | Description |
 |---|---|---|---|
-| `dir` | `const char*` | yes | Directory containing the member `.sfg` files. |
+| `dir` | `const char*` | yes | Directory holding the member stores. |
 
 **Returns:** Federation handle, or `NULL` on error.
 
+**Errors:** `NULL` on a `NULL` handle or a failed operation; `seraph_last_error` has the message.
+
 ### `seraph_federation_new`
 
-Create an empty federation. Add stores with `seraph_federation_add_path`.
+Create an empty federation. Add member stores with `add_path`, or open a directory of stores with `open_dir`.
 
 ```c
 void* seraph_federation_new(void);
 ```
 
+*No parameters.*
+
 **Returns:** Federation handle (never `NULL`).
+
+**Errors:** `NULL` on a `NULL` handle or a failed operation; `seraph_last_error` has the message.
 
 ### `seraph_federation_add_path`
 
-Register a store file under `name`. The store must share the federation's
-embedding model and dimension.
+Register a store file under `name` as a member of the federation. The store must share the federation's embedding model and dimension.
 
 ```c
 int seraph_federation_add_path(void* handle, const char* name, const char* path);
@@ -3622,20 +4605,30 @@ int seraph_federation_add_path(void* handle, const char* name, const char* path)
 | Name | Type | Required | Description |
 |---|---|---|---|
 | `handle` | `void*` | yes | Federation handle. |
-| `name` | `const char*` | yes | Federation-local label for the store. |
-| `path` | `const char*` | yes | Path to the `.sfg` file. |
+| `name` | `const char*` | yes | Member name. |
+| `path` | `const char*` | yes | Path to the member's `.sfg` file. |
 
 **Returns:** `0` on success, `-1` on error.
 
+**Errors:** `-1` if the handle is `NULL`.
+
 ### `seraph_federation_len`
 
-Number of member stores.
+Number of member stores (`len(fed)` in Python).
 
 ```c
 size_t seraph_federation_len(void* handle);
 ```
 
+**Parameters**
+
+| Name | Type | Required | Description |
+|---|---|---|---|
+| `handle` | `void*` | yes | Federation handle. |
+
 **Returns:** Member count (`0` if the handle is `NULL`).
+
+**Errors:** `NULL` on a `NULL` handle or a failed operation; `seraph_last_error` has the message.
 
 ### `seraph_federation_member_names`
 
@@ -3645,22 +4638,37 @@ Member store names, in add order.
 char* seraph_federation_member_names(void* handle);
 ```
 
+**Parameters**
+
+| Name | Type | Required | Description |
+|---|---|---|---|
+| `handle` | `void*` | yes | Federation handle. |
+
 **Returns:** JSON array of strings (free with `seraph_string_free`), or `NULL` on error.
+
+**Errors:** `NULL` on a `NULL` handle or a failed operation; `seraph_last_error` has the message.
 
 ### `seraph_federation_refresh`
 
-Re-pull routing vectors for any member that promoted an eigenframe since the last
-refresh (flagged via the store's `promote` event). Cheap — only changed members.
+Re-pull routing vectors for any member that promoted an eigenframe since the last refresh. Cheap: only changed members are read.
 
 ```c
 int seraph_federation_refresh(void* handle);
 ```
 
+**Parameters**
+
+| Name | Type | Required | Description |
+|---|---|---|---|
+| `handle` | `void*` | yes | Federation handle. |
+
 **Returns:** `1` if the router changed, `0` if not, `-1` on error.
+
+**Errors:** `-1` if the handle is `NULL`.
 
 ### `seraph_federation_route`
 
-Route the query to the top `top_stores` members without searching them.
+Route a query to the members most likely to hold its answer, without searching them.
 
 ```c
 char* seraph_federation_route(
@@ -3676,18 +4684,17 @@ char* seraph_federation_route(
 | Name | Type | Required | Description |
 |---|---|---|---|
 | `handle` | `void*` | yes | Federation handle. |
-| `embedding` | `const float*` | yes | Query embedding. |
-| `embedding_len` | `size_t` | yes | Embedding dimension. |
-| `top_stores` | `size_t` | yes | Number of stores to return. |
+| `embedding` | `const float*` | yes | Query vector. |
+| `embedding_len` | `size_t` | yes | Length of `embedding`. |
+| `top_stores` | `size_t` | yes | Members to return. |
 
 **Returns:** JSON array of `{store, score}` (free with `seraph_string_free`), or `NULL` on error.
 
+**Errors:** `NULL` on a `NULL` handle or a failed operation; `seraph_last_error` has the message.
+
 ### `seraph_federation_search`
 
-Route and fan out search across the selected stores in parallel, merging results by
-cosine score. `mode` selects the router: `"best"` (single best store), `"top"`
-(top-`n` stores), or `"all"` (every store). Each routed store returns `top_k`; the
-merged result is truncated to `top_k`.
+Search the federation: route the query to the best-fitting members, search each, and merge the hits into one ranked list.
 
 ```c
 char* seraph_federation_search(
@@ -3706,18 +4713,20 @@ char* seraph_federation_search(
 | Name | Type | Required | Description |
 |---|---|---|---|
 | `handle` | `void*` | yes | Federation handle. |
-| `embedding` | `const float*` | yes | Query embedding. |
-| `embedding_len` | `size_t` | yes | Embedding dimension. |
-| `top_k` | `size_t` | yes | Number of results to return. |
-| `tau` | `float` | yes | Similarity threshold. |
-| `mode` | `const char*` | yes | `"best"`, `"top"`, or `"all"`. |
-| `n` | `size_t` | yes | Number of stores for `"top"` mode (ignored otherwise). |
+| `embedding` | `const float*` | yes | Query vector. |
+| `embedding_len` | `size_t` | yes | Length of `embedding`. |
+| `top_k` | `size_t` | yes | Maximum number of hits. |
+| `tau` | `float` | yes | Similarity floor (cosine); `0.0` disables it. |
+| `mode` | `const char*` | yes | Routing mode: `"best"`, `"top"` or `"all"`. |
+| `n` | `size_t` | yes | Members searched under `"top"`. |
 
 **Returns:** JSON array of hits (free with `seraph_string_free`), or `NULL` on error.
 
+**Errors:** `NULL` on a `NULL` handle or a failed operation; `seraph_last_error` has the message.
+
 ### `seraph_federation_free`
 
-Free a federation handle.
+Free a federation handle and close its member stores.
 
 ```c
 void seraph_federation_free(void* handle);
@@ -3727,7 +4736,9 @@ void seraph_federation_free(void* handle);
 
 | Name | Type | Required | Description |
 |---|---|---|---|
-| `handle` | `void*` | yes | Federation handle to free. |
+| `handle` | `void*` | yes | Federation handle. |
+
+**Returns:** nothing.
 
 ---
 
@@ -3760,7 +4771,7 @@ typedef struct {
     char* frame_id;       // owned string
     float score;          // raw similarity
     float confidence;     // score with path-length decay
-    uint32_t path_length; // BFS depth from entry point
+    uint32_t path_length; // steps from the entry point
 } SeraphHit;
 ```
 

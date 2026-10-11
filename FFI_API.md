@@ -320,7 +320,7 @@ int seraph_store_set_search_entry_gap(void* handle, float gap);
 
 ### `seraph_store_set_search_use_stream`
 
-Use the bounded search walk regardless of store size (it is used automatically from `search_stream_threshold` frames). Runtime only.
+Run search through the bounded walk, the default at every store size, or with on=False through the full traversal below search_stream_threshold, the completeness reference. Runtime only.
 
 ```c
 int seraph_store_set_search_use_stream(void* handle, bool on, size_t beam);
@@ -331,8 +331,8 @@ int seraph_store_set_search_use_stream(void* handle, bool on, size_t beam);
 | Name | Type | Required | Description |
 |---|---|---|---|
 | `handle` | `void*` | yes | Store handle. |
-| `on` | `bool` | yes | Enable or disable. |
-| `beam` | `size_t` | yes | Beam width; `0` = unbounded. |
+| `on` | `bool` | yes | True (the default) runs the bounded walk; False keeps the full traversal below search_stream_threshold. |
+| `beam` | `size_t` | yes | Beam width; 0 = unbounded. |
 
 **Returns:** `0` on success, `-1` on error.
 
@@ -340,7 +340,7 @@ int seraph_store_set_search_use_stream(void* handle, bool on, size_t beam);
 
 ### `seraph_store_set_search_stream_threshold`
 
-Store size from which `search` uses the bounded walk. Default `50000`; `0` disables the gate. Runtime only.
+With the bounded walk switched off, the store size from which search uses it anyway. Default 50000; 0 disables the size rule. Runtime only.
 
 ```c
 int seraph_store_set_search_stream_threshold(void* handle, size_t n);
@@ -390,6 +390,25 @@ int seraph_store_set_commit_ceiling_margin(void* handle, float m);
 |---|---|---|---|
 | `handle` | `void*` | yes | Store handle. |
 | `m` | `float` | yes | Ceiling slack; `1.0` is the tight stop. |
+
+**Returns:** `0` on success, `-1` on error.
+
+**Errors:** `-1` if the handle is `NULL`.
+
+### `seraph_store_set_commit_ceiling_slack`
+
+Set the stop-line slack of commit-time placement, the cosine form of commit_ceiling_margin: placement stops once the best remaining candidate is no more than the k-th best minus slack. Default 0.05, the line search stops on; 0 falls back to the multiplicative margin. Runtime only; frames store their parent and edges, so changing it never forces a migration.
+
+```c
+int seraph_store_set_commit_ceiling_slack(void* handle, float slack);
+```
+
+**Parameters**
+
+| Name | Type | Required | Description |
+|---|---|---|---|
+| `handle` | `void*` | yes | Store handle. |
+| `slack` | `float` | yes | Cosine distance below the k-th best candidate at which placement stops; 0 falls back to the margin. |
 
 **Returns:** `0` on success, `-1` on error.
 
@@ -711,6 +730,24 @@ int64_t seraph_store_last_search_visits(void* handle);
 | `handle` | `void*` | yes | Store handle. |
 
 **Returns:** Visit count (`>= 0`), or `-1` on error.
+
+**Errors:** `NULL` on a `NULL` handle or a failed operation; `seraph_last_error` has the message.
+
+### `seraph_store_last_commit_visits`
+
+The number of frames examined to place the last frame committed. An operations cost counter, the ingest counterpart of last_search_visits.
+
+```c
+int64_t seraph_store_last_commit_visits(void* handle);
+```
+
+**Parameters**
+
+| Name | Type | Required | Description |
+|---|---|---|---|
+| `handle` | `void*` | yes | Store handle. |
+
+**Returns:** `int64_t`.
 
 **Errors:** `NULL` on a `NULL` handle or a failed operation; `seraph_last_error` has the message.
 

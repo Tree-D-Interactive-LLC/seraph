@@ -411,6 +411,24 @@ store.set_commit_ceiling_margin(m) -> None
 
 **Raises:** `RuntimeError` if the store is closed.
 
+### `store.set_commit_ceiling_slack(slack)`
+
+Set the stop-line slack of commit-time placement, the cosine form of commit_ceiling_margin: placement stops once the best remaining candidate is no more than the k-th best minus slack. Default 0.05, the line search stops on; 0 falls back to the multiplicative margin. Runtime only; frames store their parent and edges, so changing it never forces a migration.
+
+```python
+store.set_commit_ceiling_slack(slack) -> None
+```
+
+**Parameters**
+
+| Name | Type | Required | Default | Description |
+|---|---|---|---|---|
+| `slack` | `float` | yes | -- | Cosine distance below the k-th best candidate at which placement stops; 0 falls back to the margin. |
+
+**Returns:** `None`.
+
+**Raises:** `RuntimeError` if the store is closed or the operation fails.
+
 ### `store.commit_ceiling_margin()`
 
 Current stop line of the commit walk (see `set_commit_ceiling_margin`).
@@ -424,6 +442,20 @@ store.commit_ceiling_margin() -> float
 **Returns:** `float`.
 
 **Raises:** `RuntimeError` if the store is closed.
+
+### `store.commit_ceiling_slack()`
+
+The current stop-line slack of commit-time placement (default 0.05); 0 means the multiplicative margin is in use.
+
+```python
+store.commit_ceiling_slack() -> float
+```
+
+*No parameters.*
+
+**Returns:** `float`.
+
+**Raises:** `RuntimeError` if the store is closed or the operation fails.
 
 ### `store.set_sim_edge_policy(routing=False, parent=True, occlusion=0.0, pool=0)`
 
@@ -515,12 +547,12 @@ store.put(b"sensitive content", embedding)   # encrypted transparently
 
 ## Configuration
 
-### `StoreConfig(model_id="BAAI/bge-small-en-v1.5", eigen_threshold=5, eigen_min_age_s=0.0, tau_similarity=0.5, tau_merge=0.92, max_index_elements=100000, custom_range=None, search_max_depth=50, search_visit_cap_multiplier=20, redirect_per_frame=True, secure=None, eigen_matmul_min=256, encryption_passphrase=None, search_use_stream=False, search_stream_threshold=50000, search_stream_beam=16, vector_precision="codes4", resident_precision=None)`
+### `StoreConfig(model_id="BAAI/bge-small-en-v1.5", eigen_threshold=5, eigen_min_age_s=0.0, tau_similarity=0.5, tau_merge=0.92, max_index_elements=100000, custom_range=None, search_max_depth=50, search_visit_cap_multiplier=20, redirect_per_frame=True, secure=None, eigen_matmul_min=256, encryption_passphrase=None, search_use_stream=True, search_stream_threshold=50000, search_stream_beam=16, vector_precision="codes4", resident_precision=None)`
 
 Store configuration, given to `create`. The model id and the precisions are fixed for the store's life; the search knobs are runtime defaults.
 
 ```python
-StoreConfig(model_id="BAAI/bge-small-en-v1.5", eigen_threshold=5, eigen_min_age_s=0.0, tau_similarity=0.5, tau_merge=0.92, max_index_elements=100000, custom_range=None, search_max_depth=50, search_visit_cap_multiplier=20, redirect_per_frame=True, secure=None, eigen_matmul_min=256, encryption_passphrase=None, search_use_stream=False, search_stream_threshold=50000, search_stream_beam=16, vector_precision="codes4", resident_precision=None) -> StoreConfig
+StoreConfig(model_id="BAAI/bge-small-en-v1.5", eigen_threshold=5, eigen_min_age_s=0.0, tau_similarity=0.5, tau_merge=0.92, max_index_elements=100000, custom_range=None, search_max_depth=50, search_visit_cap_multiplier=20, redirect_per_frame=True, secure=None, eigen_matmul_min=256, encryption_passphrase=None, search_use_stream=True, search_stream_threshold=50000, search_stream_beam=16, vector_precision="codes4", resident_precision=None) -> StoreConfig
 ```
 
 **Parameters**
@@ -540,8 +572,8 @@ StoreConfig(model_id="BAAI/bge-small-en-v1.5", eigen_threshold=5, eigen_min_age_
 | `secure` | `str \| None` | no | `None` | Security posture: `"off"`, `"standard"` (alias `"on"`), or `None` (auto-detect). |
 | `eigen_matmul_min` | `int` | no | `256` | Eigenframe count from which the entry scan uses the resident matrix (`0` = always). |
 | `encryption_passphrase` | `str \| None` | no | `None` | Passphrase for AES-256-GCM encryption at rest. |
-| `search_use_stream` | `bool` | no | `False` | Use the bounded search walk regardless of store size. Runtime, not persisted. |
-| `search_stream_threshold` | `int` | no | `50000` | Store size from which `search` uses the bounded walk (`0` disables). Runtime, not persisted. |
+| `search_use_stream` | `bool` | no | `True` | Run search through the bounded walk at every store size; `False` keeps the full traversal below `search_stream_threshold`. Runtime, not persisted. |
+| `search_stream_threshold` | `int` | no | `50000` | With the bounded walk switched off, the store size from which `search` uses it anyway (`0` disables). Runtime, not persisted. |
 | `search_stream_beam` | `int` | no | `16` | Width of the bounded search walk (`0` = unbounded). Runtime, not persisted. |
 | `vector_precision` | `str` | no | `"codes4"` | Precision each frame's vector is stored at, fixed for the store's life: `"codes4"` (4-bit codes), `"fp32"`, `"fp16"`, `"bf16"` or `"fp64"`. Read-only once constructed. |
 | `resident_precision` | `str \| None` | no | `None` | Precision search scores from: `"fp32"`, `"fp16"`, `"bf16"` or `"frame"` (no resident copy). `None` derives it from `vector_precision`. Changeable at runtime with `set_resident_precision`. Read-only once constructed. |

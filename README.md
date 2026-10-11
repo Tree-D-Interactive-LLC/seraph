@@ -4,6 +4,12 @@
 
 SERAPH is a storage and retrieval engine that organizes content through emergent geometric structure rather than explicit schemas. It provides cryptographic provenance, semantic search, and chain-of-custody guarantees from genesis to tip.
 
+**0.3.1**
+
+- **Ingest is 6 to 10× faster on large stores.** Placement now stops on the same line search does (`set_commit_ceiling_slack`, default 0.05; `0` restores the previous behaviour), so its cost tracks the neighbourhood rather than the store.
+- **Search uses the bounded walk at every store size.** Small stores answer in well under a millisecond where they could take tens of milliseconds before; `set_search_use_stream(False)` keeps the full traversal.
+- **`search_with_trace` reports the walk `search` actually runs**, and `last_commit_visits` reports what the last placement examined.
+
 **New in 0.3.0**
 
 - **Vector precision is yours.** Choose at `create` what each frame persists — the calibration-free 4-bit codes (the default), or `fp32`, `fp16`, `bf16`, `fp64` — and separately what search scores from (`resident_precision`: `fp32`, `fp16`, `bf16`, or none), switchable at runtime. A half-precision resident halves search memory at the same quality. Stores from every earlier release open unchanged.

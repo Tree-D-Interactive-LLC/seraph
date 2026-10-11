@@ -308,7 +308,7 @@ pub fn set_search_entry_gap(&mut self, gap: f32) -> Result<(), Error>
 
 ### `Store::set_search_use_stream`
 
-Use the bounded search walk regardless of store size (it is used automatically from `search_stream_threshold` frames). Runtime only.
+Run search through the bounded walk, the default at every store size, or with on=False through the full traversal below search_stream_threshold, the completeness reference. Runtime only.
 
 ```rust
 pub fn set_search_use_stream(&mut self, on: bool, beam: usize) -> Result<(), Error>
@@ -316,7 +316,7 @@ pub fn set_search_use_stream(&mut self, on: bool, beam: usize) -> Result<(), Err
 
 ### `Store::set_search_stream_threshold`
 
-Store size from which `search` uses the bounded walk. Default `50000`; `0` disables the gate. Runtime only.
+With the bounded walk switched off, the store size from which search uses it anyway. Default 50000; 0 disables the size rule. Runtime only.
 
 ```rust
 pub fn set_search_stream_threshold(&mut self, n: usize) -> Result<(), Error>
@@ -336,6 +336,14 @@ Stop line of the walk that picks a new frame's parent and similarity edges, as a
 
 ```rust
 pub fn set_commit_ceiling_margin(&mut self, m: f32) -> Result<(), Error>
+```
+
+### `Store::set_commit_ceiling_slack`
+
+Set the stop-line slack of commit-time placement, the cosine form of commit_ceiling_margin: placement stops once the best remaining candidate is no more than the k-th best minus slack. Default 0.05, the line search stops on; 0 falls back to the multiplicative margin. Runtime only; frames store their parent and edges, so changing it never forces a migration.
+
+```rust
+pub fn set_commit_ceiling_slack(&mut self, slack: f32) -> Result<(), Error>
 ```
 
 ### `Store::set_sim_edge_policy`
@@ -464,6 +472,14 @@ Diagnostic: frames visited by the last `search_stream` call.
 
 ```rust
 pub fn last_search_visits(&self) -> Result<usize, Error>
+```
+
+### `Store::last_commit_visits`
+
+The number of frames examined to place the last frame committed. An operations cost counter, the ingest counterpart of last_search_visits.
+
+```rust
+pub fn last_commit_visits(&self) -> Result<usize, Error>
 ```
 
 ---

@@ -201,6 +201,7 @@ extern "C" {
     fn seraph_store_set_search_rank_mode(handle: *mut c_void, mode: u8, share: f32, doors: usize, budget: usize) -> i32;
     fn seraph_store_set_seed_term(handle: *mut c_void, beta: f32) -> i32;
     fn seraph_store_set_commit_ceiling_margin(handle: *mut c_void, m: f32) -> i32;
+    fn seraph_store_set_commit_ceiling_slack(handle: *mut c_void, slack: f32) -> i32;
     fn seraph_store_set_sim_edge_policy(handle: *mut c_void, routing: bool, parent: bool, occlusion: f32, pool: usize) -> i32;
     fn seraph_store_set_search_max_visits(handle: *mut c_void, v: usize) -> i32;
     fn seraph_store_set_search_ceiling_margin(handle: *mut c_void, m: f32) -> i32;
@@ -216,6 +217,7 @@ extern "C" {
     fn seraph_store_take_walk_profile(handle: *mut c_void) -> *mut c_char;
     fn seraph_store_entry_count(handle: *mut c_void, query_embedding: *const f32, query_len: usize) -> i64;
     fn seraph_store_last_search_visits(handle: *mut c_void) -> i64;
+    fn seraph_store_last_commit_visits(handle: *mut c_void) -> i64;
 
     // Frame access
     fn seraph_store_get_frame(handle: *mut c_void, frame_id: *const c_char) -> *mut c_char;
@@ -1601,6 +1603,15 @@ impl Store {
         if rc == 0 { Ok(()) } else { Err(last_error()) }
     }
 
+    /// Stop-line slack of the commit-time walk, the cosine form of the margin:
+    /// placement stops once the best remaining candidate is no more than the k-th
+    /// best minus `slack`. Default 0.05, the line search stops on; `0` falls back
+    /// to the multiplicative margin.
+    pub fn set_commit_ceiling_slack(&mut self, slack: f32) -> Result<(), Error> {
+        let rc = unsafe { seraph_store_set_commit_ceiling_slack(self.handle, slack) };
+        if rc == 0 { Ok(()) } else { Err(last_error()) }
+    }
+
     /// How each committing frame chooses its similarity edges: `routing` allows
     /// edges to Genesis/Seed frames (default false), `parent` the edge to its own
     /// parent (default true), `occlusion > 0` prunes redundant candidates (`0` =
@@ -1705,6 +1716,12 @@ impl Store {
     /// DIAGNOSTIC: nodes visited by the last streamed search (ops cost).
     pub fn last_search_visits(&self) -> Result<usize, Error> {
         let n = unsafe { seraph_store_last_search_visits(self.handle) };
+        if n < 0 { Err(last_error()) } else { Ok(n as usize) }
+    }
+
+    /// DIAGNOSTIC: frames examined to place the last frame committed (ops cost).
+    pub fn last_commit_visits(&self) -> Result<usize, Error> {
+        let n = unsafe { seraph_store_last_commit_visits(self.handle) };
         if n < 0 { Err(last_error()) } else { Ok(n as usize) }
     }
 

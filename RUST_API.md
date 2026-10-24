@@ -11,6 +11,8 @@ presents that engine as safe `Store` / `Encoder` / `Federation` types. Read
 *Authentication & Licensing* and *Conventions* first — they apply to every
 function and are not repeated per entry.
 
+This reference covers the 0.4.0 API: one method per question, its options in a struct. The methods 0.4.0 replaced still compile through 0.x as `#[deprecated]` aliases whose warning names the replacement; they are documented in the 0.3.1 release's reference, not repeated here.
+
 ---
 
 ## Authentication & Licensing
@@ -23,14 +25,14 @@ Free tier they return `Err(Error)` with the message available via the error's
 
 | Capability | Methods |
 |---|---|
-| Encryption at rest | `Store::create_encrypted`, `Store::open_encrypted` |
+| Encryption at rest | `Store::create_encrypted`, `Store::open_with` (`OpenOptions::passphrase`) |
 | Sealing | `Store::seal` |
 | Time anchoring | `Store::append_tip_anchor` |
 
 **Writer identity (secure mode).** The license attests *who is licensed and at
 what tier* — it does **not** carry a signing key. Per-frame writer attribution
 uses a key the **calling application supplies**: pass a 32-byte Ed25519 private
-seed to `Store::create_with_writer` / `Store::open_with_writer`. The seed stays
+seed to `Store::create_with_writer` / `Store::open_with` (`OpenOptions::writer_seed`). The seed stays
 in the caller's process; SERAPH signs each frame with it and records only the
 derived public key in the store. Secure mode requires both a permitting tier and
 a supplied writer seed.
@@ -54,7 +56,7 @@ These rules hold for all functions unless an entry says otherwise:
   borrows engine memory for zero-copy reads — do not hold it across a mutation
   of the same store.
 - **Embeddings are caller-supplied.** Pass any embedding as `&[f32]`; its length
-  must equal the store dimension (`store.dim()`). The `Encoder` / `search_text`
+  must equal the store dimension (`store.dim()`). The `Encoder` and `Store::encode`
   helpers exist for convenience but are not required.
 - **Model ID is fixed at genesis.** The embedding model is declared at `create`
   and permanent for the store's lifetime. Mismatched writes are rejected.
@@ -100,18 +102,34 @@ These rules hold for all functions unless an entry says otherwise:
 
 ### `Store::create`
 
-Create a new store on disk.
+Create a new store on disk. The model and the vector precision are fixed for the store's life; `model_id` is a shortcut for a default configuration on that model.
 
 ```rust
 pub fn create(path: impl AsRef<Path>, config: Option<StoreConfig>) -> Result<Self, Error>
 ```
 
+### `Store::open_with`
+
+Open an existing store. Options supply the writer identity for frames appended in the session, the passphrase of an encrypted store, read-only access, and the runtime tuning to start with, in any combination.
+
+```rust
+pub fn open_with(path: impl AsRef<Path>, options: &OpenOptions) -> Result<Self, Error>
+```
+
 ### `Store::open`
 
-Open an existing unencrypted store.
+Open an existing unencrypted store with every option at its default: the same as `open` with no options.
 
 ```rust
 pub fn open(path: impl AsRef<Path>) -> Result<Self, Error>
+```
+
+### `abi_version`
+
+The version of the C ABI conventions this library implements (the options structs, status codes and hit layouts).
+
+```rust
+pub fn abi_version() -> u32
 ```
 
 ### `Store::sync`
@@ -134,14 +152,6 @@ Create a store that signs every frame with an app-supplied writer identity and r
 pub fn create_with_writer( path: impl AsRef<Path>, config: Option<StoreConfig>, writer_seed: &[u8; 32], ) -> Result<Self, Error>
 ```
 
-### `Store::open_with_writer`
-
-Open an existing store with an app-supplied writer identity, so frames appended in this session are signed with it. Reading and verification need no key, and the seed is never persisted or transmitted.
-
-```rust
-pub fn open_with_writer(path: impl AsRef<Path>, writer_seed: &[u8; 32]) -> Result<Self, Error>
-```
-
 ---
 
 ## Encryption
@@ -154,48 +164,32 @@ Create a store encrypted at rest with AES-256-GCM. Content is encrypted under a 
 pub fn create_encrypted( path: impl AsRef<Path>, config: Option<StoreConfig>, passphrase: &str, ) -> Result<Self, Error>
 ```
 
-### `Store::open_encrypted`
-
-Open an encrypted store with a passphrase.
-
-```rust
-pub fn open_encrypted(path: impl AsRef<Path>, passphrase: &str) -> Result<Self, Error>
-```
-
 ---
 
 ## Ingestion
 
+### `Store::put_with`
+
+Ingest content with a pre-computed embedding. Options set its metadata, when the content happened (`occurred_at`), a region to place it in (`within`), whether the seed term chooses its parent, and whether it becomes a door at once (`promote`), in any combination.
+
+```rust
+pub fn put_with(&mut self, content: &[u8], embedding: &[f32], options: &PutOptions) -> Result<String, Error>
+```
+
 ### `Store::put`
 
-Ingest content with a pre-computed embedding.
+Ingest content with every option at its default: the same as `put` with no options.
 
 ```rust
 pub fn put(&mut self, content: &[u8], embedding: &[f32]) -> Result<String, Error>
 ```
 
-### `Store::put_with_metadata`
+### `Store::put_batch`
 
-Ingest content with an embedding and JSON metadata.
-
-```rust
-pub fn put_with_metadata( &mut self, content: &[u8], embedding: &[f32], metadata_json: &str, ) -> Result<String, Error>
-```
-
-### `Store::put_batch_json`
-
-Deprecated alias of `put_batch_incremental`; calls take the incremental path. Leaves the store buffered: call `flush()` when the load is done.
+Bulk ingest. Each item carries the options `put` takes (metadata, event time, region, seed term, promotion) and is placed against the live store, so an item may attach to an earlier item of the same batch and the result is identical to calling `put` in a loop at a fraction of the cost. Insertion order shapes the tree, so order the batch meaningfully. Every item is checked before the first is committed; a batch that stops partway reports the frames it committed. The store stays buffered until it is synced or closed.
 
 ```rust
-pub fn put_batch_json(&mut self, items_json: &str) -> Result<Vec<String>, Error>
-```
-
-### `Store::put_batch_incremental_json`
-
-Bulk ingest. Each item's parent is chosen against the live store, so an item may attach to an earlier item of the same batch, and the result is identical to calling `put` in a loop at a fraction of the cost. Insertion order shapes the tree, so order the batch meaningfully. The store is left buffered: call `flush()` when the load is finished.
-
-```rust
-pub fn put_batch_incremental_json(&mut self, items_json: &str) -> Result<Vec<String>, Error>
+pub fn put_batch(&mut self, items: &[PutItem]) -> Result<Vec<String>, Error>
 ```
 
 ### `Store::begin_batch`
@@ -234,164 +228,36 @@ pub fn markers_json(&self, kind: &str) -> Option<String>
 
 ## Search
 
+### `Store::search_with`
+
+Search for the frames that best answer a query: a query vector, or text encoded with the store's model. Options limit which frames may fill a result slot (superseded frames, a window on when the content happened, a window on when it was committed, a region), warp the query, order the selected hits, and return the visits made. A `committed` window's end reads the store as it stood then.
+
+```rust
+pub fn search_with(&self, query: &[f32], options: &SearchOptions) -> Result<SearchOutcome, Error>
+```
+
 ### `Store::search`
 
-Search for the frames nearest a query embedding, ranked by similarity.
+Search with `top_k` and `tau` and every other option at its default: the same as `search` with no options.
 
 ```rust
 pub fn search(&self, query_embedding: &[f32], top_k: usize, tau: f32) -> Result<Vec<Hit>, Error>
 ```
 
-### `Store::search_opts`
+### `Store::tuning`
 
-Search with a `SearchOpts` options object: `top_k`, `tau_similarity`, `max_depth`, `include_superseded`, and the time-window fields (`order`, `after_us`, `before_us`).
+The runtime settings this handle runs with: how searches walk and stop, and how new frames are placed. Never persisted; every open starts from the defaults or the tuning it was opened with.
 
 ```rust
-pub fn search_opts( &self, query_embedding: &[f32], top_k: usize, tau: f32, include_superseded: bool, ) -> Result<Vec<Hit>, Error>
+pub fn tuning(&self) -> Result<Tuning, Error>
 ```
 
-### `Store::search_temporal`
+### `Store::set_tuning`
 
-Search with a time window. Relevance selection is unchanged; `after_us` and `before_us` (microseconds since the epoch) set an inclusive window on which frames may fill result slots, and with `before_us` set the search runs over the store as it stood at that time. `order` sorts the selected results by time without changing their scores. In Python the window travels in `SearchOpts`.
-
-```rust
-pub fn search_temporal( &self, query_embedding: &[f32], top_k: usize, tau: f32, include_superseded: bool, order: TemporalOrder, after_us: Option<u64>, before_us: Option<u64>, ) -> Result<Vec<Hit>, Error>
-```
-
-### `Store::search_stream`
-
-Search through the bounded walk with an explicit beam width and visit budget, recording the visit count for `last_search_visits`. With the store's own beam and budget it returns the same results as `search`.
+Replace the runtime settings. Takes effect on the next read or commit; frames record the parent and edges they committed to, so no setting forces a migration. In Python, assign `store.tuning`.
 
 ```rust
-pub fn search_stream(&self, query_embedding: &[f32], top_k: usize, tau: f32, beam_width: usize, max_visits: Option<usize>) -> Result<Vec<Hit>, Error>
-```
-
-### `Store::search_with_trace_json`
-
-Search returning the hits and the frames visited, in visit order.
-
-```rust
-pub fn search_with_trace_json(&self, query_embedding: &[f32], top_k: usize, tau: f32) -> Result<String, Error>
-```
-
-### `Store::search_text`
-
-Encode a text query with the store's model and search in one call. The encoder loads on first use.
-
-```rust
-pub fn search_text(&self, query: &str, top_k: usize, tau: f32) -> Result<Vec<Hit>, Error>
-```
-
-### `Store::set_search_visit_cap_multiplier`
-
-Legacy visit budget for a search as a multiple of `top_k`, used only when the absolute budget (`set_search_max_visits`) is `0`. Default `20`. Runtime only.
-
-```rust
-pub fn set_search_visit_cap_multiplier(&mut self, multiplier: u32) -> Result<(), Error>
-```
-
-### `Store::set_search_entry_k`
-
-Entry-point floor: at least this many eigenframes become entry points for a search. `0` restores the default of `2`. Runtime only.
-
-```rust
-pub fn set_search_entry_k(&mut self, k: usize) -> Result<(), Error>
-```
-
-### `Store::set_search_entry_gap`
-
-Entry-point breadth: every eigenframe within `gap` of the best entry score becomes an entry point, in addition to the floor. `0` uses the floor alone. Default `0.05`. Runtime only.
-
-```rust
-pub fn set_search_entry_gap(&mut self, gap: f32) -> Result<(), Error>
-```
-
-### `Store::set_search_use_stream`
-
-Run search through the bounded walk, the default at every store size, or with on=False through the full traversal below search_stream_threshold, the completeness reference. Runtime only.
-
-```rust
-pub fn set_search_use_stream(&mut self, on: bool, beam: usize) -> Result<(), Error>
-```
-
-### `Store::set_search_stream_threshold`
-
-With the bounded walk switched off, the store size from which search uses it anyway. Default 50000; 0 disables the size rule. Runtime only.
-
-```rust
-pub fn set_search_stream_threshold(&mut self, n: usize) -> Result<(), Error>
-```
-
-### `Store::set_seed_term`
-
-Weight of the seed term in parent selection. When the store has seeds, a new frame's parent is chosen by its similarity to the candidate plus `beta` times its similarity to the candidate's seed, which settles near-ties between seed regions. It affects the parent only; the stored embedding, the similarity edges and search results are unchanged. Default `0.6`; `0` disables it. Per-frame opt-out: `seed_term=False` on the put calls. Runtime only, not persisted.
-
-```rust
-pub fn set_seed_term(&mut self, beta: f32) -> Result<(), Error>
-```
-
-### `Store::set_commit_ceiling_margin`
-
-Stop line of the walk that picks a new frame's parent and similarity edges, as a fraction of the best score it holds. Lower values look further for a parent and cost ingest time; higher values ingest faster with slightly worse placement. Default `0.85`. Runtime only, not persisted.
-
-```rust
-pub fn set_commit_ceiling_margin(&mut self, m: f32) -> Result<(), Error>
-```
-
-### `Store::set_commit_ceiling_slack`
-
-Set the stop-line slack of commit-time placement, the cosine form of commit_ceiling_margin: placement stops once the best remaining candidate is no more than the k-th best minus slack. Default 0.05, the line search stops on; 0 falls back to the multiplicative margin. Runtime only; frames store their parent and edges, so changing it never forces a migration.
-
-```rust
-pub fn set_commit_ceiling_slack(&mut self, slack: f32) -> Result<(), Error>
-```
-
-### `Store::set_sim_edge_policy`
-
-How a new frame chooses its similarity edges. By default the top `edge_budget` content frames above `tau_similarity`, the parent included and never a Genesis or Seed frame. `occlusion > 0` drops a candidate when a nearer kept neighbour already covers it (`1.0` strict; larger keeps more); `pool` widens the candidate list at ingest cost. Runtime only, not persisted; each frame records the edges it chose.
-
-```rust
-pub fn set_sim_edge_policy(&mut self, routing: bool, parent: bool, occlusion: f32, pool: usize) -> Result<(), Error>
-```
-
-### `Store::set_search_rank_mode`
-
-How result slots are filled by `search` and the reads built on it. `"cosine"` (the default) ranks every slot by similarity. `"two_channel"` gives the last `round(share * top_k)` slots to frames reached by a descent from the `doors` nearest eigenframes, bounded by `budget` frames, that the similarity ranking lacks. Runtime only, not persisted.
-
-```rust
-pub fn set_search_rank_mode(&mut self, two_channel: Option<(f32, usize, usize)>) -> Result<(), Error>
-```
-
-### `Store::set_search_max_visits`
-
-Absolute visit budget for a search, independent of `top_k`. Default `50000`; `0` falls back to `top_k` times the legacy multiplier. Runtime only.
-
-```rust
-pub fn set_search_max_visits(&mut self, v: usize) -> Result<(), Error>
-```
-
-### `Store::set_search_ceiling_slack`
-
-How far past the current top-k a search keeps looking before it stops, as a cosine distance below the k-th best score. Smaller values stop sooner; larger values find more on weak-match queries at more cost. Default `0.05`; `0.10` is the completeness setting. `0` uses the multiplicative margin instead (`set_search_ceiling_margin`). Runtime only, not persisted.
-
-```rust
-pub fn set_search_ceiling_slack(&mut self, slack: f32) -> Result<(), Error>
-```
-
-### `Store::set_door_index`
-
-Use the door index for entry-point selection: an index over the eigenframes that replaces the full scan once the store has `door_index_min` of them (default `4096`). Default on. Entry selection is then approximate to the index's accuracy (see `set_door_index_ef`); replay and as-of reads always use the exact scan. Turning it on builds the index at once; off drops it. Runtime only, not persisted.
-
-```rust
-pub fn set_door_index(&mut self, on: bool) -> Result<(), Error>
-```
-
-### `Store::set_door_index_ef`
-
-Candidates the door index examines per query. Higher is closer to the exact scan at more cost per query. Default `128`. Runtime only, not persisted.
-
-```rust
-pub fn set_door_index_ef(&mut self, ef: usize) -> Result<(), Error>
+pub fn set_tuning(&mut self, tuning: &Tuning) -> Result<(), Error>
 ```
 
 ### `Store::vector_precision`
@@ -418,28 +284,12 @@ Change the precision search scores from and rebuild the resident copy at once. `
 pub fn set_resident_precision(&mut self, name: &str) -> Result<(), Error>
 ```
 
-### `Store::set_search_ceiling_margin`
-
-Multiplicative stop line for search, used only when the slack (`set_search_ceiling_slack`) is `0`: search stops once nothing left can score above `m` times the k-th best. Default `0.85`. Runtime only, not persisted.
-
-```rust
-pub fn set_search_ceiling_margin(&mut self, m: f32) -> Result<(), Error>
-```
-
 ### `Store::set_search_arena`
 
 Keep a contiguous resident copy of the vectors for search (default on). Off saves that memory at more cost per search; results are unchanged. Runtime only.
 
 ```rust
 pub fn set_search_arena(&mut self, on: bool) -> Result<(), Error>
-```
-
-### `Store::set_search_adjacency`
-
-Use the pre-resolved search adjacency (default on). Results are unchanged. Runtime only.
-
-```rust
-pub fn set_search_adjacency(&mut self, on: bool) -> Result<(), Error>
 ```
 
 ### `Store::set_walk_profile`
@@ -468,7 +318,7 @@ pub fn entry_count(&self, query_embedding: &[f32]) -> Result<usize, Error>
 
 ### `Store::last_search_visits`
 
-Diagnostic: frames visited by the last `search_stream` call.
+Diagnostic: frames visited by the last search.
 
 ```rust
 pub fn last_search_visits(&self) -> Result<usize, Error>
@@ -508,6 +358,14 @@ Get a frame by ID, with its full data including embedding and metadata.
 
 ```rust
 pub fn get_frame_json(&self, frame_id: &str) -> Option<String>
+```
+
+### `Store::lifecycle`
+
+The record's account of one frame: when it was committed (and the event time it claims), when it became a door and how (genesis, seed, threshold or manual promotion), and when it was retired and how (superseded, or consolidated into a frame). Each event carries its position in record order and the commit time there.
+
+```rust
+pub fn lifecycle(&self, frame_id: &str) -> Result<Option<FrameLifecycle>, Error>
 ```
 
 ### `Store::get_embedding`
@@ -650,36 +508,12 @@ Drop a label from the seed registry, appending a new registry snapshot. The fram
 pub fn unregister_seed(&mut self, label: &str) -> Result<String, Error>
 ```
 
-### `Store::put_subtree`
-
-Ingest content under a named subtree: the parent is chosen from inside `root`'s subtree instead of the whole store, with no similarity floor. Similarity edges are chosen globally as `put` chooses them, so the frame stays reachable by ordinary search. The placement is recorded on the frame so a migration keeps it inside the same region.
-
-```rust
-pub fn put_subtree( &mut self, root: &str, content: &[u8], embedding: &[f32], metadata_json: Option<&str>, ) -> Result<String, Error>
-```
-
-### `Store::search_subtree`
-
-Search confined to a named subtree: the root is the entry point and only edges inside the subtree are followed. Ordinary `search` is unaffected and still reaches these frames.
-
-```rust
-pub fn search_subtree( &self, root: &str, query: &[f32], top_k: usize, tau: Option<f32>, ) -> Result<Vec<Hit>, Error>
-```
-
 ### `Store::promote`
 
 Promote an active frame to eigenframe unconditionally. Promotion is monotonic.
 
 ```rust
 pub fn promote(&mut self, frame_id: &str) -> Result<(), Error>
-```
-
-### `Store::promote_content`
-
-Ingest content and immediately promote it to eigenframe (atomic ingest plus promote).
-
-```rust
-pub fn promote_content( &mut self, content: &[u8], embedding: &[f32], metadata_json: Option<&str>, ) -> Result<String, Error>
 ```
 
 ### `Store::eigenframes_json`
@@ -734,124 +568,52 @@ Enumerate seed-rooted subtrees with at least `min_size` descendants.
 pub fn subtrees_json(&self, min_size: usize) -> Result<String, Error>
 ```
 
-### `Store::chain_json`
+### `Store::chain_with`
 
-The shortest route between two frames over committed edges (similarity edges and parent/child links), each step weighted by how similar its two frames are. Exact; bounded by `search_max_visits`. For a frame's own ancestry use `lineage`.
+The shortest route between two endpoints over committed edges, each step weighted by how similar its two frames are. Each end is a frame ID or a query vector, which stands for the frames that fit it best. With `forward`, every step runs forward in record order: how the start led to the end. For a frame's own ancestry use `lineage`.
 
 ```rust
-pub fn chain_json(&self, from_id: &str, to_id: &str) -> Result<String, Error>
+pub fn chain_with(&self, from: Endpoint, to: Endpoint, options: &RouteOptions) -> Result<ChainResult, Error>
 ```
 
-### `Store::chain_opts_json`
+### `Store::provenance_with`
 
-chain with the include_superseded option: superseded frames may be steps of the route, as they may be results of search_opts.
+What `frame_id` was built on: a route back in record order through the frames it attached to when it was committed (its parent and the similarity neighbours it chose), stopping when the next step is no more related than the frame's own background. A warp steers which strand is followed; `as_of` reads the record as it stood. `reached` is `True` when at least one step was taken.
 
 ```rust
-pub fn chain_opts_json(&self, from_id: &str, to_id: &str, include_superseded: bool) -> Result<String, Error>
+pub fn provenance_with(&self, frame_id: &str, options: &StrandOptions) -> Result<ChainResult, Error>
 ```
 
-### `Store::chain_forward_json`
+### `Store::influence_with`
 
-How `from_id` led to `to_id`: the shortest route over committed edges taking only steps forward in commit order, so each step is to a frame that attached to the one before it when it was committed. `from_id` must precede `to_id`; `reached` is `False` when no such route exists. Crosses lineages, which `lineage` cannot.
+What was built on `frame_id`: a route forward in record order through the frames that attached to it when they were committed, stopping when the next step is no more related than the frame's own background. A warp steers which strand is followed; `as_of` reads the record as it stood. `reached` is `True` when at least one step was taken.
 
 ```rust
-pub fn chain_forward_json(&self, from_id: &str, to_id: &str, include_superseded: bool) -> Result<String, Error>
+pub fn influence_with(&self, frame_id: &str, options: &StrandOptions) -> Result<ChainResult, Error>
 ```
 
-### `Store::chain_forward_between_json`
+### `Store::connections_with`
 
-How the idea at `emb_a` led to the idea at `emb_b`. Each query's `search` results (under `top_k` and `tau`) stand for it; the best-fitting earlier/later pair that a forward route joins is chosen, and the route is the forward chain between them. `reached` is `False` when no forward route joins the two result sets.
-
-```rust
-pub fn chain_forward_between_json(&self, emb_a: &[f32], emb_b: &[f32], top_k: usize, tau: f32, include_superseded: bool) -> Result<String, Error>
-```
-
-### `Store::provenance_json`
-
-What `frame_id` was built on: a route back in commit order through the frames it attached to when it was committed (its parent and the similarity neighbours it chose), stopping when the next step is no more related than the store's background. `tau` overrides that stop; `reached` is `True` when at least one step was taken.
+The distinct ways two frames connect: up to `max_routes` routes over committed edges that share no interior frames, shortest first, each with its bridge frame (the interior frame closest to both ends). With `forward`, every route runs forward in record order: the ways `from_id` led to `to_id`.
 
 ```rust
-pub fn provenance_json(&self, frame_id: &str, tau: Option<f32>, include_superseded: bool) -> Result<String, Error>
-```
-
-### `Store::influence_json`
-
-What was built on `frame_id`: a route forward in commit order through the frames that attached to it when they were committed, stopping when the next step is no more related than the store's background. `tau` overrides that stop; `reached` is `True` when at least one step was taken.
-
-```rust
-pub fn influence_json(&self, frame_id: &str, tau: Option<f32>, include_superseded: bool) -> Result<String, Error>
-```
-
-### `Store::provenance_with_warp_spec_json`
-
-`provenance` steered by a warp: steps are chosen, and the stop measured, against the start frame pulled toward `targets` and away from `suppress`, so the warp selects which strand is followed.
-
-```rust
-pub fn provenance_with_warp_spec_json(&self, frame_id: &str, warp_spec_json: &str, tau: Option<f32>, include_superseded: bool) -> Result<String, Error>
-```
-
-### `Store::influence_with_warp_spec_json`
-
-`influence` steered by a warp: steps are chosen, and the stop measured, against the start frame pulled toward `targets` and away from `suppress`, so the warp selects which strand is followed.
-
-```rust
-pub fn influence_with_warp_spec_json(&self, frame_id: &str, warp_spec_json: &str, tau: Option<f32>, include_superseded: bool) -> Result<String, Error>
-```
-
-### `Store::connections_json`
-
-The distinct ways two frames connect: up to `max_routes` routes over committed edges that share no interior frames, shortest first, each with its bridge frame (the interior frame closest to both ends). With `forward` set, every route runs forward in commit order: the ways `from_id` led to `to_id`.
-
-```rust
-pub fn connections_json(&self, from_id: &str, to_id: &str, max_routes: usize, forward: bool, include_superseded: bool) -> Result<String, Error>
+pub fn connections_with( &self, from: Endpoint, to: Endpoint, options: &RouteOptions, max_routes: usize, ) -> Result<Vec<Connection>, Error>
 ```
 
 ### `Store::chain_to_json`
 
-Chain from the frame nearest a query embedding.
+The route from the door a query enters through to the frame nearest the query. On C and Rust use `chain` with an entry endpoint.
 
 ```rust
 pub fn chain_to_json(&self, query_embedding: &[f32]) -> Result<String, Error>
 ```
 
-### `Store::history_json`
+### `Store::history_with`
 
-How the store came to hold what the query finds. The top `anchors` search hits choose their lineages, and the best `top_k` frames along those lineages come back oldest first, each with the route that reached it. On a store ingested in time order the result reads as the development of a topic.
-
-```rust
-pub fn history_json(&self, query_embedding: &[f32], top_k: usize, tau: f32, anchors: usize) -> Result<String, Error>
-```
-
-### `Store::history_with_warp_spec_json`
-
-`history` from a warped query. The warp moves which lineages the anchors fall in, so it chooses which strand of a topic's history is read: toward a finding, away from a thread. Pass a frame's embedding as a target to steer toward that frame.
+How the store came to hold what the query finds. The top `anchors` search hits choose their lineages, and the best `top_k` frames along those lineages come back oldest first (by event time under the default basis), each with the route that reached it. The time windows limit which frames come back, as in `search`; a warp chooses which strand of the history is read.
 
 ```rust
-pub fn history_with_warp_spec_json(&self, query_embedding: &[f32], warp_spec_json: &str, top_k: usize, tau: f32, anchors: usize) -> Result<String, Error>
-```
-
-### `Store::chain_to_with_warp_spec_json`
-
-`chain_to` with a warp applied to the query before the route is found.
-
-```rust
-pub fn chain_to_with_warp_spec_json(&self, query_embedding: &[f32], warp_spec_json: &str) -> Result<String, Error>
-```
-
-### `Store::chain_between_with_warp_spec_json`
-
-`chain_between` with a warp applied to both endpoints before the route is found.
-
-```rust
-pub fn chain_between_with_warp_spec_json(&self, emb_a: &[f32], emb_b: &[f32], warp_spec_json: &str) -> Result<String, Error>
-```
-
-### `Store::chain_between_json`
-
-Chain between two points in embedding space: the route between the frames nearest each embedding.
-
-```rust
-pub fn chain_between_json(&self, emb_a: &[f32], emb_b: &[f32]) -> Result<String, Error>
+pub fn history_with(&self, query: &[f32], options: &HistoryOptions) -> Result<HistoryResult, Error>
 ```
 
 ### `Store::gradient_json`
@@ -874,49 +636,17 @@ pub fn constitutive_score(&self, chain_json: &str) -> f32
 
 ## Neighborhood
 
-### `Store::neighborhood_json`
+### `Store::neighborhood_with`
 
-Three-population neighborhood of a frame: its consensus, geometric and lineage neighbours.
-
-```rust
-pub fn neighborhood_json(&self, frame_id: &str, tau: f32, hops: usize) -> Result<String, Error>
-```
-
-### `Store::neighborhood_with_warp_spec_json`
-
-`neighborhood` with a warp field applied.
+Three-population neighborhood of a frame: its consensus, geometric and lineage neighbours. A warp moves the anchor for the geometric population only.
 
 ```rust
-pub fn neighborhood_with_warp_spec_json(&self, frame_id: &str, warp_spec_json: &str, tau: f32, hops: usize) -> Result<String, Error>
-```
-
-### `Store::neighborhood_spec_json`
-
-The three-population neighborhood of a frame, with tau given as a spec: auto (p95), loose (p75), strict (p99) or an explicit value.
-
-```rust
-pub fn neighborhood_spec_json( &self, frame_id: &str, tau: TauSpec, hops: usize, ) -> Result<String, Error>
+pub fn neighborhood_with(&self, frame_id: &str, options: &NeighborhoodOptions) -> Result<NeighborhoodResult, Error>
 ```
 
 ---
 
 ## Warp (Steering)
-
-### `Store::search_with_warp`
-
-Search with warp-field steering: the query is pulled toward `targets` and away from `suppress` before the search.
-
-```rust
-pub fn search_with_warp( &self, query_embedding: &[f32], targets_json: &str, suppress_json: &str, profile: &str, bound_k: f32, top_k: usize, tau: f32, ) -> Result<Vec<Hit>, Error>
-```
-
-### `Store::search_with_warp_spec`
-
-Search steered by a warp specification in one call. Frame-ID targets and named magnitudes in the spec are resolved against the store.
-
-```rust
-pub fn search_with_warp_spec( &self, query_embedding: &[f32], warp_spec_json: &str, top_k: usize, tau: f32, ) -> Result<Vec<Hit>, Error>
-```
 
 ### `Store::warp_query`
 
@@ -924,6 +654,22 @@ Apply a warp specification to a query and return the warped vector, without sear
 
 ```rust
 pub fn warp_query( &self, query_embedding: &[f32], warp_spec_json: &str, ) -> Result<Vec<f32>, Error>
+```
+
+### `Store::compile_warp`
+
+Compile a warp specification once against a store: frame-ID targets and named magnitudes are resolved, and the compiled warp is passed to any read that takes one. Python passes a `WarpSpec` directly.
+
+```rust
+pub fn compile_warp(&self, spec_json: &str) -> Result<Warp, Error>
+```
+
+### `Store::compile_warp_spec`
+
+Compile a typed `WarpSpec` against the store: the same as `compile_warp` without writing the JSON by hand.
+
+```rust
+pub fn compile_warp_spec(&self, spec: &WarpSpec) -> Result<Warp, Error>
 ```
 
 ### `Store::calibrate_warp`
@@ -956,14 +702,6 @@ Warp steerability: angular displacement of a query toward a target at routing ma
 
 ```rust
 pub fn steerability(&self, query_embedding: &[f32], target_id: &str) -> f32
-```
-
-### `apply_warp`
-
-Apply a warp field to a query embedding without searching (pure vector math).
-
-```rust
-pub fn apply_warp( query_embedding: &[f32], targets_json: &str, suppress_json: &str, profile: &str, bound_k: f32, ) -> Result<Vec<f32>, Error>
 ```
 
 ---
@@ -1108,7 +846,7 @@ pub fn supersede(&mut self, frame_id: &str) -> Result<String, Error>
 
 ### `Store::consolidate_json`
 
-Consolidate a specific set of frames into one centroid frame.
+Consolidate a specific set of frames into one frame at their centroid, carrying the most central frame's content, metadata and event time. Frames that carry different markings are not consolidated.
 
 ```rust
 pub fn consolidate_json(&mut self, frame_ids_json: &str) -> Result<String, Error>
@@ -1120,14 +858,6 @@ Auto-detect and consolidate all merge candidates in one pass.
 
 ```rust
 pub fn consolidate_all_json(&mut self) -> Result<String, Error>
-```
-
-### `Store::consolidate_with_strategy_json`
-
-Consolidate with an explicit `MergeStrategy`.
-
-```rust
-pub fn consolidate_with_strategy_json( &mut self, frame_ids: &[&str], strategy: MergeStrategy, ) -> Result<String, Error>
 ```
 
 ---
@@ -1501,12 +1231,12 @@ pub fn encode_batch_json(&mut self, texts_json: &str) -> Result<String, Error>
 
 ## Migration
 
-### `migrate_store`
+### `migrate_store_with`
 
-Rebuild a store into a fresh one at `dst_path`: every frame is re-committed with its identity intact (id, timestamp, content, embedding, metadata, status references) and its parent chosen against the live destination, so sentinels and redirects that name frames by id stay valid. Use it to correct an old topology or to carry a store to the current format or another `vector_precision` (`config`). Embeddings are carried as they are; use `reencode_store` to change them. Watermarks are recomputed, so they differ from the source; the destination verifies. Free function; the Python binding releases the GIL for the whole migration.
+Rebuild a store into a fresh one at `dst_path`: every frame is re-committed with its identity intact (id, content, embedding, metadata, status references) and its parent chosen against the live destination, so references by id stay valid. Use it to correct an old topology or to carry a store to the current format or another `vector_precision` (`config`). Each source frame's commit time becomes its event time, so the rebuilt store's reads answer about its history; seeds in `seed_data` are created before the first frame. Watermarks are recomputed; the destination verifies.
 
 ```rust
-pub fn migrate_store( src_path: impl AsRef<Path>, dst_path: impl AsRef<Path>, ) -> Result<MigrateReport, Error>
+pub fn migrate_store_with( src_path: impl AsRef<Path>, dst_path: impl AsRef<Path>, options: &MigrateOptions, ) -> Result<MigrateReport, Error>
 ```
 
 ### `reencode_store`

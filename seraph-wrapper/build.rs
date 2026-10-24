@@ -6,6 +6,7 @@ fn main() {
     //
     // Example:
     //   SERAPH_LIB_DIR=/path/to/seraph/lib cargo build
+    println!("cargo:rerun-if-env-changed=SERAPH_LIB_DIR");
     if let Ok(lib_dir) = std::env::var("SERAPH_LIB_DIR") {
         println!("cargo:rustc-link-search=native={lib_dir}");
 

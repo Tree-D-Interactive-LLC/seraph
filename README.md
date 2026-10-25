@@ -4,6 +4,11 @@
 
 SERAPH is a storage and retrieval engine that organizes content through emergent geometric structure rather than explicit schemas. It provides cryptographic provenance, semantic search, and chain-of-custody guarantees from genesis to tip.
 
+**0.4.1**
+
+- **Clearer license messages.** When a license needs replacing, SERAPH says so and how: run `seraph license activate`, or download it again from your account.
+- **`seraph license status` tells you whether your license will work**, and exits non-zero when it won't. `seraph license activate` replaces a license that won't work instead of declining to run, and `seraph license install` warns when the license you installed won't be accepted.
+
 **0.4.0**
 
 - **One call per operation, every option in it.** `put`, `search`, `chain`, `provenance`, `influence`, `history`, `neighborhood`, `open` and `migrate_store` each take their options in one call (keyword arguments in Python, an options struct in C, an options type in Rust), and the options combine freely: a search can take a time window, a region, a warp and a trace at once. The earlier variants (`put_with_metadata`, `search_with_warp`, `chain_between`, the `set_*` tuning calls, ...) keep working and are marked deprecated.
@@ -14,14 +19,14 @@ SERAPH is a storage and retrieval engine that organizes content through emergent
 - **Stricter input.** Malformed metadata, unknown warp profiles, relation names and configuration keys are errors instead of being ignored. Python errors are `SeraphError` subclasses (still `RuntimeError`s), and a `SeraphStore` can be shared between threads.
 - **C API.** New canonical functions (`seraph_put`, `seraph_search`, `seraph_chain`, ...) take versioned options structs and return status codes; every call checks its output pointers.
 - **`migrate_store` carries history and takes seeds.** A rebuilt store keeps each source frame's original time as its event time; `seed_data` creates seeds before the first frame.
-- **Fixes.** Route measures are exact for near-identical frames. A store created with one redirect per position reopened with one per frame. A snapshot dropped a frame retired with `supersede` even before it was retired. Submissions through `SubmissionAgent` commit in submission order.
+- **Fixes.** Route measures are exact for near-identical frames. A store created with one redirect per position reopened with one per frame. A snapshot dropped a frame retired with `supersede` even before it was retired. Submissions through `SubmissionAgent` commit in submission order. A store closed through the C API, or dropped in Rust or Python without `close()`, now keeps every frame it committed; frames from a batch that had not been synced could be lost before.
 
 > **Upgrading from 0.3.x?** Stores created by 0.4.0 use frame format 6; open them
 > with 0.4.0 or later. Stores from earlier releases open unchanged, and
 > `migrate_store` carries them to format 6. Deprecated calls emit warnings in Python
 > and are marked `#[deprecated]` in Rust. Input that was silently ignored is now an
-> error. Licenses signed under the retired signing key no longer validate and must
-> be re-issued.
+> error. If SERAPH reports that your license needs replacing, run
+> `seraph license activate` or download it again from your account.
 
 **0.3.1**
 

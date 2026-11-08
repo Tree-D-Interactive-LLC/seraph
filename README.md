@@ -4,22 +4,7 @@
 
 SERAPH is a storage and retrieval engine that organizes content through emergent geometric structure rather than explicit schemas. It provides cryptographic provenance, semantic search, and chain-of-custody guarantees from genesis to tip.
 
-**0.4.1**
 
-- **Clearer license messages.** When a license needs replacing, SERAPH says so and how: run `seraph license activate`, or download it again from your account.
-- **`seraph license status` tells you whether your license will work**, and exits non-zero when it won't. `seraph license activate` replaces a license that won't work instead of declining to run, and `seraph license install` warns when the license you installed won't be accepted.
-
-**0.4.0**
-
-- **One call per operation, every option in it.** `put`, `search`, `chain`, `provenance`, `influence`, `history`, `neighborhood`, `open` and `migrate_store` each take their options in one call (keyword arguments in Python, an options struct in C, an options type in Rust), and the options combine freely: a search can take a time window, a region, a warp and a trace at once. The earlier variants (`put_with_metadata`, `search_with_warp`, `chain_between`, the `set_*` tuning calls, ...) keep working and are marked deprecated.
-- **Bulk ingest carries everything.** Each `put_batch_incremental` item takes metadata, an event time and a region, so a bulk load no longer needs a per-frame loop; a batch that stops partway reports what it committed.
-- **Two times, kept apart.** A frame records when it was committed, the engine's own time, and can record when its content happened (`occurred_at`), the caller's claim, bound into the frame's record. Search and `history` take a window on each: `occurred` for when the content happened, `committed` for what the store held at a moment. Routes and strands take `as_of`. Results carry both times.
-- **Reads of the past return what the store answered then.** A read of the store as it stood at a moment now uses the store's structure at that moment, not today's. `lifecycle(frame_id)` reports when a frame was committed, when it became a door and when it was retired.
-- **Runtime settings in one place.** `tuning` holds every runtime setting; the full traversal is a search mode, with no switching by store size.
-- **Stricter input.** Malformed metadata, unknown warp profiles, relation names and configuration keys are errors instead of being ignored. Python errors are `SeraphError` subclasses (still `RuntimeError`s), and a `SeraphStore` can be shared between threads.
-- **C API.** New canonical functions (`seraph_put`, `seraph_search`, `seraph_chain`, ...) take versioned options structs and return status codes; every call checks its output pointers.
-- **`migrate_store` carries history and takes seeds.** A rebuilt store keeps each source frame's original time as its event time; `seed_data` creates seeds before the first frame.
-- **Fixes.** Route measures are exact for near-identical frames. A store created with one redirect per position reopened with one per frame. A snapshot dropped a frame retired with `supersede` even before it was retired. Submissions through `SubmissionAgent` commit in submission order. A store closed through the C API, or dropped in Rust or Python without `close()`, now keeps every frame it committed; frames from a batch that had not been synced could be lost before.
 
 > **Upgrading from 0.3.x?** Stores created by 0.4.0 use frame format 6; open them
 > with 0.4.0 or later. Stores from earlier releases open unchanged, and
@@ -28,29 +13,6 @@ SERAPH is a storage and retrieval engine that organizes content through emergent
 > error. If SERAPH reports that your license needs replacing, run
 > `seraph license activate` or download it again from your account.
 
-**0.3.1**
-
-- **Ingest is 6 to 10× faster on large stores.** Placement now stops on the same line search does (`set_commit_ceiling_slack`, default 0.05; `0` restores the previous behaviour), so its cost tracks the neighbourhood rather than the store.
-- **Search uses the bounded walk at every store size.** Small stores answer in well under a millisecond where they could take tens of milliseconds before; `set_search_use_stream(False)` keeps the full traversal.
-- **`search_with_trace` reports the walk `search` actually runs**, and `last_commit_visits` reports what the last placement examined.
-
-**New in 0.3.0**
-
-- **Vector precision is yours.** Choose at `create` what each frame persists — the calibration-free 4-bit codes (the default), or `fp32`, `fp16`, `bf16`, `fp64` — and separately what search scores from (`resident_precision`: `fp32`, `fp16`, `bf16`, or none), switchable at runtime. A half-precision resident halves search memory at the same quality. Stores from every earlier release open unchanged.
-- **Reads that explain the record.** `history` answers how the store came to hold what a query finds; `provenance` and `influence` follow what a frame drew on and what later drew on it; `connections` lists the distinct ways two frames connect; `chain_forward` shows how A led to B. Each has a warp-steered variant, and `chain` now returns the shortest route over committed edges (a frame's own ancestry is `lineage`).
-- **Evidence.** The frame id, commit time and committed neighbours are bound into every watermark, and seals and anchors record a digest over commit order that `verify` checks — reordering, removing or inserting frames under a seal or anchor is caught. New: `seal_with_anchor`, `append_tip_anchor`, `anchor_claims`, `order_digest`.
-- **As-of reads.** A time window's `before` end reads the store as it stood, so a historical query is as fast and as complete as a current one.
-- **Faster at scale.** Search on large stores returns in a fraction of the time, ingest does less work per frame, and opening a store no longer grows its `.gidx` sidecar.
-- **Windows GPU builds run on any NVIDIA GPU from Turing up** (RTX 20-series, T4 and newer). Earlier Windows releases loaded their GPU kernels only on compute 8.9 parts (RTX 40-series); the build now pins and verifies the target on every release.
-- **Full C and Rust parity.** The C ABI (175 functions) and the Rust crate reach every engine operation, including streamed and traced search, subtrees, and warp-steered chain and neighborhood reads. All three API references are generated from a single declaration of each operation, so the surfaces cannot drift.
-
-> **Upgrading from 0.2.x?** Stores created by 0.3.0 use frame format 5 and need
-> 0.3.0 or later to open; stores from earlier releases open unchanged. The default
-> search stop is tighter (`search_ceiling_slack` 0.05, was 0.10) — call
-> `set_search_ceiling_slack(0.10)` for the previous completeness setting. Seeds take
-> no similarity edges in new stores, and `put` accepts `seed_term`.
-
-**Foundations**
 
 - **TurboQuant storage** — 4-bit codes are the canonical embedding, so stores are **~4× smaller** (up to ~8× on short content) with **sub-millisecond search** at scale (with the SIMD embedding arena enabled — see note below).
 - **Bring-your-own encoder, zero setup** — any embedding model works out of the box with **no calibration** and nothing per-encoder to configure or persist. The quantizer is universal, so stores are self-describing and portable across machines.

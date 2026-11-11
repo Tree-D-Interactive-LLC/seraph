@@ -879,6 +879,13 @@ impl StoreConfig {
         self
     }
 
+    /// Replace a file already at the path when the store is created. Off (the
+    /// default), `create` refuses a path that holds a file. Never persisted.
+    pub fn overwrite(mut self, v: bool) -> Self {
+        self.json_overrides.insert("overwrite".into(), v.into());
+        self
+    }
+
     /// Similarity edges per frame (`0` = parent tree only). Persisted.
     pub fn edge_budget(mut self, v: usize) -> Self {
         self.json_overrides.insert("edge_budget".into(), (v as u64).into());
@@ -1609,7 +1616,7 @@ impl Store {
     // Lifecycle — batch mode
     // ---------------------------------------------------------------- //
 
-    /// Enable buffered write mode (skip per-frame WAL + fsync).
+    /// Enable buffered write mode: writes are buffered, with no fsync until `commit`.
     pub fn begin_batch(&mut self) -> Result<(), Error> {
         let rc = unsafe { seraph_store_begin_batch(self.handle) };
         if rc == 0 { Ok(()) } else { Err(last_error()) }

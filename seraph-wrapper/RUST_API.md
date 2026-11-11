@@ -194,7 +194,7 @@ pub fn put_batch(&mut self, items: &[PutItem]) -> Result<Vec<String>, Error>
 
 ### `Store::begin_batch`
 
-Begin a buffered write batch. Writes skip the per-frame WAL and fsync until commit, which flushes once.
+Begin a buffered write batch. Writes are held without a per-frame fsync until commit, which flushes once.
 
 ```rust
 pub fn begin_batch(&mut self) -> Result<(), Error>
@@ -1256,7 +1256,7 @@ builder methods are stable; see `src/lib.rs` for exact definitions.
 
 | Type | Kind | Summary |
 |---|---|---|
-| `StoreConfig` | builder | Config for `create`. Builder methods: `new`, `model_id`, `eigen_threshold`, `eigen_min_age_s`, `tau_similarity`, `tau_merge`, `search_max_depth`, `search_visit_cap_multiplier`, `eigen_matmul_min`. |
+| `StoreConfig` | builder | Config for `create`. Builder methods: `new`, `model_id`, `eigen_threshold`, `eigen_min_age_s`, `tau_similarity`, `tau_merge`, `search_max_depth`, `search_visit_cap_multiplier`, `eigen_matmul_min`, `overwrite`. |
 | `Hit` | struct | A search result: `frame_id: String`, `score: f32`, `confidence: f32`, `path_length: u32`. |
 | `Stats` | struct | Store counts: `total_frames`, `active_frames`, `eigenframes`, `superseded`, `redirects`. |
 | `FrameView` | borrow | Zero-copy frame view (from `borrow_frame`): `id()`, `parent_id()`, `embedding()`, `content()`, `in_degree()`, `status()`, `timestamp()`. Valid until dropped; not across mutations. |

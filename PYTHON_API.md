@@ -183,7 +183,7 @@ store.flush() -> None
 
 ### `store.set_fast_mode(enabled)`
 
-Enable or disable fast ingest mode, which skips the per-frame WAL and fsync. Disabling flushes to disk.
+Enable or disable fast ingest mode, which holds writes without a per-frame fsync. Disabling flushes to disk.
 
 ```python
 store.set_fast_mode(enabled) -> None
@@ -193,7 +193,7 @@ store.set_fast_mode(enabled) -> None
 
 | Name | Type | Required | Default | Description |
 |---|---|---|---|---|
-| `enabled` | `bool` | yes | -- | `True` to defer WAL/fsync; `False` to restore per-write durability. |
+| `enabled` | `bool` | yes | -- | `True` to defer the per-write fsync; `False` to restore per-write durability. |
 
 **Returns:** `None`.
 
@@ -285,7 +285,6 @@ store.put(b"sensitive content", embedding)   # encrypted transparently
 ### Notes
 
 - Encryption is set at creation time and cannot be added later.
-- The `.gidx` sidecar is not written for encrypted stores (prevents topology leaks).
 - Search, chain verification, and all other operations work identically on encrypted stores.
 - The passphrase derives a KEK via Argon2id; a random DEK encrypts content.
 
@@ -293,12 +292,12 @@ store.put(b"sensitive content", embedding)   # encrypted transparently
 
 ## Configuration
 
-### `StoreConfig(model_id="BAAI/bge-small-en-v1.5", eigen_threshold=5, eigen_min_age_s=0.0, tau_similarity=0.5, tau_merge=0.92, max_index_elements=100000, custom_range=None, search_max_depth=None, search_visit_cap_multiplier=None, redirect_per_frame=True, secure=None, eigen_matmul_min=None, encryption_passphrase=None, search_use_stream=None, search_stream_threshold=None, search_stream_beam=None, vector_precision="codes4", resident_precision=None, *, tuning=None, edge_budget=None, parent_select=None)`
+### `StoreConfig(model_id="BAAI/bge-small-en-v1.5", eigen_threshold=5, eigen_min_age_s=0.0, tau_similarity=0.5, tau_merge=0.92, max_index_elements=100000, custom_range=None, search_max_depth=None, search_visit_cap_multiplier=None, redirect_per_frame=True, secure=None, eigen_matmul_min=None, encryption_passphrase=None, search_use_stream=None, search_stream_threshold=None, search_stream_beam=None, vector_precision="codes4", resident_precision=None, *, tuning=None, edge_budget=None, parent_select=None, overwrite=False)`
 
 Store configuration, given to `create`. The model id and the precisions are fixed for the store's life; `tuning` holds the runtime settings the store starts with. The separate runtime arguments still work and write into `tuning`.
 
 ```python
-StoreConfig(model_id="BAAI/bge-small-en-v1.5", eigen_threshold=5, eigen_min_age_s=0.0, tau_similarity=0.5, tau_merge=0.92, max_index_elements=100000, custom_range=None, search_max_depth=None, search_visit_cap_multiplier=None, redirect_per_frame=True, secure=None, eigen_matmul_min=None, encryption_passphrase=None, search_use_stream=None, search_stream_threshold=None, search_stream_beam=None, vector_precision="codes4", resident_precision=None, *, tuning=None, edge_budget=None, parent_select=None) -> StoreConfig
+StoreConfig(model_id="BAAI/bge-small-en-v1.5", eigen_threshold=5, eigen_min_age_s=0.0, tau_similarity=0.5, tau_merge=0.92, max_index_elements=100000, custom_range=None, search_max_depth=None, search_visit_cap_multiplier=None, redirect_per_frame=True, secure=None, eigen_matmul_min=None, encryption_passphrase=None, search_use_stream=None, search_stream_threshold=None, search_stream_beam=None, vector_precision="codes4", resident_precision=None, *, tuning=None, edge_budget=None, parent_select=None, overwrite=False) -> StoreConfig
 ```
 
 **Parameters**
@@ -326,6 +325,7 @@ StoreConfig(model_id="BAAI/bge-small-en-v1.5", eigen_threshold=5, eigen_min_age_
 | `tuning` | `Tuning \| None` | no | `None` | Runtime settings the store starts with; `None` for the defaults. |
 | `edge_budget` | `int \| None` | no | `None` | Similarity edges per frame, fixed for the store's life (default 10). |
 | `parent_select` | `str \| None` | no | `None` | Parent selection, fixed for the store's life: `"stream"` (the default) or `"exact"` (a brute-force reference for verification). |
+| `overwrite` | `bool` | no | `False` | Replace a file already at the path when the store is created. `False` makes `create` refuse a path that holds a file. Not stored with the store. |
 
 **Returns:** `StoreConfig` — all fields are readable attributes; all but the two precisions are writable.
 
@@ -2357,7 +2357,7 @@ Encoder.from_pretrained(model_id) -> Encoder
 
 ### `store.begin_batch()`
 
-Begin a buffered write batch. Writes skip the per-frame WAL and fsync until commit, which flushes once.
+Begin a buffered write batch. Writes are held without a per-frame fsync until commit, which flushes once.
 
 ```python
 store.begin_batch() -> None

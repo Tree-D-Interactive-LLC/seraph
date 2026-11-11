@@ -259,7 +259,7 @@ The boundary between Commercial and Enterprise is the **location and control of 
 |---------|:----:|:----------:|:----------:|
 | **Store Lifecycle** | | | |
 | Create, open, close stores | ✓ | ✓ | ✓ |
-| Append-only frame log with WAL | ✓ | ✓ | ✓ |
+| Append-only frame log | ✓ | ✓ | ✓ |
 | Watermark chain verification | ✓ | ✓ | ✓ |
 | Open & read sealed stores | ✓ | ✓ | ✓ |
 | **Ingestion & Search** | | | |

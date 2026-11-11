@@ -3441,7 +3441,7 @@ seraph_encoder_close(enc);
 
 ### `seraph_store_begin_batch`
 
-Begin a buffered write batch. Writes skip the per-frame WAL and fsync until commit, which flushes once.
+Begin a buffered write batch. Writes are held without a per-frame fsync until commit, which flushes once.
 
 ```c
 int seraph_store_begin_batch(void* handle);
